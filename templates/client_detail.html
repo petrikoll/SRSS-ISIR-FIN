@@ -1,0 +1,2780 @@
+<!doctype html>
+{% set case = primary_case(client) %}
+{% set ai_pending = case and (
+    ((case.ai_summary and case.ai_summary.startswith("AI shrnutí se připravuje")) or (case.ai_summary and case.ai_summary.startswith("AI shrnutí vybraných dokumentů se připravuje")))
+    or (case.ai_summary and case.ai_summary.startswith("AI ověření údajů"))
+    or (case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje"))
+) %}
+{% set case_study_pending = case and case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje") %}
+{% set case_study_ready = case and case.ai_case_study and not case_study_pending %}
+
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ client.last_name }} {{ client.first_name }}</title>
+
+    <style>
+        :root {
+            --color-primary: #314765;
+            --color-primary-strong: #263a55;
+            --color-accent: #16a34a;
+            --color-accent-soft: #dcfce7;
+            --color-danger: #dc2626;
+            --color-surface: #fbfdff;
+            --color-border: #dfe7f1;
+            --color-text: #24324a;
+            --color-muted: #6b778c;
+            --color-input-bg: #fcfdff;
+            --shadow-soft: 0 4px 18px rgba(15, 23, 42, 0.07);
+            --shadow-header: 0 8px 24px rgba(15, 23, 42, 0.09);
+            --shadow-table: 0 8px 26px rgba(15, 23, 42, 0.11);
+            --shadow-button: 0 2px 8px rgba(15, 23, 42, 0.1);
+            --radius-card: 13px;
+            --radius-control: 10px;
+        }
+        * { box-sizing: border-box; }
+        html {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: var(--color-text);
+            background: linear-gradient(to bottom, #d6dee9, #b8c4d4);
+            background-attachment: fixed;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        main {
+            width: min(980px, calc(100% - 32px));
+            margin: 28px auto;
+        }
+
+        .top {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+
+        h1 {
+            margin: 0;
+            color: var(--color-text);
+            font-size: 26px;
+            line-height: 1.15;
+        }
+
+        h2 {
+            margin: 0 0 10px;
+            color: var(--color-text);
+            font-size: 18px;
+        }
+
+        .title-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .button-small {
+            padding: 6px 9px;
+            font-size: 12px;
+            line-height: 1.2;
+        }
+
+        .section {
+            margin-bottom: 18px;
+            padding: 18px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-card);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .summary-strip {
+            margin-bottom: 18px;
+            padding: 14px 16px;
+            color: #fff;
+            background: var(--color-primary);
+            border: 1px solid var(--color-primary);
+            border-radius: var(--radius-card);
+            box-shadow: var(--shadow-header);
+        }
+
+        .compact-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px 14px;
+            align-items: center;
+        }
+
+        .compact-item span {
+            display: block;
+            margin-bottom: 2px;
+            color: #dce7f5;
+            font-size: 12px;
+        }
+
+        .compact-item strong {
+            display: block;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+
+        .compact-item small {
+            display: block;
+            margin-top: 4px;
+            color: #fde68a;
+            font-size: 12px;
+            line-height: 1.25;
+        }
+
+        .compact-item-wide {
+            grid-column: span 2;
+        }
+
+        .compact-value {
+            display: block;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+
+        .expand-value summary {
+            display: inline-block;
+            margin-top: 4px;
+            padding: 5px 8px;
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            color: var(--color-text);
+            background: #f8fafc;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            list-style: none;
+        }
+
+        .expand-value summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .expand-value[open] summary {
+            margin-bottom: 5px;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-weight: 700;
+            font-size: 12px;
+            line-height: 1.15;
+        }
+
+        .status-ok { color: #166534; background: #dcfce7; }
+        .status-warning { color: #9a3412; background: #ffedd5; }
+        .status-danger { color: #991b1b; background: #fee2e2; }
+        .status-muted { color: var(--color-muted); background: #e8edf3; }
+        .status-black { color: #374151; background: #e8edf3; }
+
+        .button,
+        button {
+            display: inline-block;
+            padding: 9px 12px;
+            border: 1px solid var(--color-primary);
+            border-radius: var(--radius-control);
+            color: #fff;
+            background: var(--color-primary);
+            box-shadow: var(--shadow-button);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.2;
+            text-decoration: none;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.18s ease;
+        }
+
+        .button:hover,
+        button:hover {
+            opacity: 0.95;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.14);
+        }
+
+        .button-light {
+            border-color: var(--color-border);
+            color: var(--color-text);
+            background: #fff;
+            font-weight: 600;
+        }
+
+        .danger {
+            border-color: var(--color-danger);
+            color: #fff;
+            background: var(--color-danger);
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        form { margin: 0; }
+
+        .edit-panel {
+            display: none;
+            margin-bottom: 18px;
+            padding: 18px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-card);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .edit-panel:target {
+            display: block;
+        }
+
+        .edit-form {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(140px, 1fr));
+            gap: 12px;
+            align-items: end;
+        }
+
+        .edit-form h2 {
+            grid-column: 1 / -1;
+            margin-top: 8px;
+        }
+
+        .edit-wide {
+            grid-column: span 2;
+        }
+
+        label {
+            display: grid;
+            gap: 6px;
+            color: var(--color-muted);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            padding: 10px 11px;
+            border: 1px solid #d4dde9;
+            border-radius: var(--radius-control);
+            color: var(--color-text);
+            background: var(--color-input-bg);
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #4c84ff;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(76, 132, 255, 0.15);
+        }
+
+        textarea {
+            min-height: 72px;
+            resize: vertical;
+        }
+
+
+
+        .background-status-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            align-items: center;
+            margin: -8px 0 14px;
+            padding: 8px 10px;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-control);
+            background: var(--color-surface);
+            color: var(--color-muted);
+            box-shadow: var(--shadow-soft);
+            font-size: 12px;
+            line-height: 1.2;
+        }
+
+        .background-status-row strong {
+            color: var(--color-text);
+        }
+
+        .background-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-weight: 700;
+        }
+
+        .background-status-pill::before {
+            content: "";
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: currentColor;
+        }
+
+        .background-status-working {
+            color: #1d4ed8;
+            background: #eff6ff;
+        }
+
+        .background-status-idle {
+            color: #166534;
+            background: #dcfce7;
+        }
+
+        .background-status-error {
+            color: #991b1b;
+            background: #fee2e2;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+
+        .section-header h2 {
+            margin: 0;
+        }
+
+        .document-toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            margin-bottom: 0;
+        }
+
+        .selected-documents-count {
+            color: var(--color-muted);
+            font-size: 13px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .ai-action-button {
+            border-color: var(--color-primary);
+            background: var(--color-primary);
+            color: #ffffff;
+        }
+
+        .ai-action-button:hover:not(:disabled) {
+            border-color: var(--color-primary-strong);
+            background: var(--color-primary-strong);
+        }
+
+        .ai-action-button:disabled {
+            border-color: var(--color-border);
+            color: var(--color-muted);
+            background: #e8edf3;
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        .case-study-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 34px;
+            font-size: 13px;
+        }
+
+        .ai-working {
+            padding: 6px 10px;
+            border: 1px solid #93c5fd;
+            border-radius: 999px;
+            color: #1d4ed8;
+            background: #eff6ff;
+            font-weight: 700;
+            animation: ai-pulse 1.25s ease-in-out infinite;
+        }
+
+        @keyframes ai-pulse {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.18);
+            }
+            50% {
+                box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.08);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .ai-working {
+                animation: none;
+            }
+        }
+
+        .summary {
+            margin-top: 12px;
+            padding: 14px;
+            background: #f8fafc;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-control);
+            line-height: 1.5;
+        }
+
+        .muted {
+            color: var(--color-muted);
+        }
+
+        .pdf-help {
+            margin: 5px 0 0;
+            color: var(--color-muted);
+            font-size: 11px;
+            line-height: 1.25;
+        }
+
+        .pdf-card-strip {
+            display: flex;
+            gap: 10px;
+            overflow-x: auto;
+            padding: 8px 0 10px;
+            border-bottom: 1px solid var(--color-border);
+            scrollbar-width: thin;
+        }
+
+        .pdf-card {
+            min-width: 168px;
+            max-width: 210px;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-control);
+            background: #ffffff;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            overflow: hidden;
+            transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+        }
+
+        .pdf-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+        }
+
+        .pdf-card.selected {
+            border-color: #4c84ff;
+            background: #f5f9ff;
+            box-shadow: 0 0 0 2px rgba(76, 132, 255, 0.12);
+        }
+
+        .pdf-card.selected .pdf-card-checkbox {
+            background: #eaf2ff;
+        }
+
+        .pdf-card-checkbox {
+            display: flex;
+            align-items: flex-start;
+            padding: 8px 4px 8px 8px;
+            background: #f8fafc;
+        }
+
+        .pdf-card-open {
+            border: 0;
+            background: transparent;
+            color: var(--color-text);
+            text-align: left;
+            padding: 7px 8px;
+            cursor: pointer;
+            min-height: 78px;
+            width: 100%;
+            white-space: normal;
+        }
+
+        .pdf-card-open:hover {
+            background: #eff6ff;
+        }
+
+        .pdf-card-date {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--color-muted);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .pdf-card-title {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            color: var(--color-primary);
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.25;
+            white-space: normal;
+            overflow: hidden;
+        }
+
+        .pdf-card-type {
+            display: block;
+            margin-top: 3px;
+            color: var(--color-muted);
+            font-size: 12px;
+        }
+
+        .pdf-card-links {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
+            padding: 6px 8px 8px;
+            border-top: 1px solid var(--color-border);
+            background: #f8fafc;
+        }
+
+        .pdf-card-links .button,
+        .pdf-card-links button {
+            width: 100%;
+            min-width: 0;
+            padding: 5px 4px;
+            font-size: 12px;
+            text-align: center;
+        }
+        .pdf-card-links form {
+            margin: 0;
+        }
+
+        /* Kompaktnější a čitelnější karty dokumentů. Stažené hlavní dokumenty
+           mají být výraznější než pouhé ISIR odkazy. */
+        .pdf-card {
+            min-width: 150px;
+            max-width: 178px;
+            border-color: #94a3b8;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+        }
+        .pdf-card:not(.pdf-card-metadata-only) {
+            border-color: #64748b;
+            background: #ffffff;
+        }
+        .pdf-card-metadata-only {
+            border-style: dashed;
+            border-color: #d1d5db;
+            background: #f8fafc;
+            box-shadow: none;
+        }
+        .pdf-card-checkbox {
+            padding: 6px 4px 6px 7px;
+        }
+        .pdf-card-checkbox input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #7c3aed;
+        }
+        .pdf-card-open {
+            min-height: 58px;
+            padding: 6px 7px;
+        }
+        .pdf-card-date {
+            margin-bottom: 2px;
+            font-size: 11px;
+        }
+        .pdf-card-title {
+            -webkit-line-clamp: 2;
+            color: #0f172a;
+            font-size: 11px;
+            line-height: 1.22;
+        }
+        .pdf-card:not(.pdf-card-metadata-only) .pdf-card-title {
+            color: #1d4ed8;
+            font-weight: 800;
+        }
+        .pdf-card-type {
+            margin-top: 2px;
+            font-size: 10px;
+        }
+        .pdf-card-links {
+            gap: 4px;
+            padding: 5px 6px 6px;
+        }
+        .pdf-card-links .button,
+        .pdf-card-links button {
+            padding: 4px 4px;
+            font-size: 11px;
+            line-height: 1.1;
+        }
+        .pdf-card-metadata-only .pdf-card-links {
+            grid-template-columns: 1fr;
+        }
+        .pdf-card-metadata-only .pdf-card-links form {
+            display: grid;
+            gap: 4px;
+        }
+        .include-rule-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 5px;
+            margin: 0;
+            color: #64748b;
+            font-size: 10px;
+            line-height: 1.15;
+        }
+        .include-rule-option input {
+            width: 13px;
+            height: 13px;
+            margin-top: 0;
+        }
+        .include-case-button {
+            white-space: normal;
+            font-size: 10.5px !important;
+        }
+        .include-case-button {
+            border-color: #7c3aed;
+            color: #fff;
+            background: #7c3aed;
+            font-weight: 700;
+        }
+        .include-case-button:hover {
+            border-color: #6d28d9;
+            background: #6d28d9;
+        }
+
+        .pdf-preview-panel {
+            margin-top: 6px;
+            padding: 8px;
+            border: 1px solid #d9e2ef;
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+
+        .pdf-preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+
+        .pdf-preview-header .button {
+            padding: 5px 8px;
+            font-size: 12px;
+        }
+
+        .doc-frame {
+            width: 100%;
+            height: clamp(430px, calc(100vh - 330px), 560px);
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #ffffff;
+        }
+
+        .case-study-layout {
+            display: grid;
+            grid-template-columns: 190px minmax(0, 1fr);
+            gap: 14px;
+            align-items: start;
+        }
+
+        .case-study-nav {
+            display: grid;
+            gap: 6px;
+            padding: 8px;
+            border: 1px solid #dbe3ef;
+            border-radius: 8px;
+            background: #f8fafc;
+            position: sticky;
+            top: 12px;
+        }
+
+        .case-study-nav button {
+            width: 100%;
+            padding: 8px 9px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            color: #1f2937;
+            background: #ffffff;
+            text-align: left;
+            font-size: 13px;
+            white-space: normal;
+        }
+
+        .case-study-nav button:hover {
+            background: #eff6ff;
+        }
+
+        .case-study-nav button.active {
+            border-color: #2563eb;
+            color: #ffffff;
+            background: #2563eb;
+        }
+
+        .case-study-content {
+            min-height: 260px;
+            padding: 14px;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            background: #eff6ff;
+        }
+
+        .case-study-content h3 {
+            margin: 0 0 10px;
+            color: #1e3a8a;
+            font-size: 18px;
+        }
+
+        .case-study-content pre {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+.document-summary-box {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+}
+
+.document-summary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.document-summary-content {
+    line-height: 1.5;
+}
+
+.document-summary-minimized {
+    margin-top: 12px;
+    padding: 9px 12px;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    background: #eff6ff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.document-summary-minimized[hidden] {
+    display: none;
+}
+        .rich-ai-text {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #1f2937;
+        }
+
+        .rich-ai-text h4 {
+            margin: 16px 0 6px;
+            font-size: 15px;
+            color: #1e3a8a;
+        }
+
+        .rich-ai-text h4:first-child {
+            margin-top: 0;
+        }
+
+        .rich-ai-text p {
+            margin: 0 0 10px;
+        }
+
+        .rich-ai-text ul {
+            margin: 6px 0 12px;
+            padding-left: 22px;
+        }
+
+        .rich-ai-text li {
+            margin-bottom: 5px;
+        }
+
+        .rich-ai-text strong {
+            color: #111827;
+        }
+
+        .rich-ai-text .ai-date-line {
+            margin: 7px 0;
+            padding: 8px 10px;
+            border-left: 3px solid #93c5fd;
+            border-radius: 6px;
+            background: #f8fafc;
+        }
+
+        .case-study-content pre {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+.document-summary-box {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+}
+
+.document-summary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.document-summary-content {
+    line-height: 1.5;
+}
+
+.document-summary-minimized {
+    margin-top: 12px;
+    padding: 9px 12px;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    background: #eff6ff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.document-summary-minimized[hidden] {
+    display: none;
+}
+
+
+        .document-summary-launcher {
+            margin-top: 12px;
+            padding: 12px;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            background: #eff6ff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .document-summary-launcher strong {
+            display: block;
+            margin-bottom: 2px;
+            color: #1e3a8a;
+        }
+
+
+        .case-study-box {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-left: 5px solid #2563eb;
+            border-radius: 10px;
+            padding: 16px;
+        }
+
+        .case-study-box .case-study-content {
+            background: #ffffff;
+            border-color: #dbeafe;
+        }
+
+        .case-study-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .case-study-header-title {
+            display: grid;
+            gap: 3px;
+        }
+
+        .case-study-header-title strong {
+            font-size: 16px;
+        }
+
+        .case-study-header-actions {
+            margin-left: auto;
+        }
+
+        .floating-summary-panel {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 60;
+            width: min(760px, calc(100vw - 48px));
+            max-height: min(760px, calc(100vh - 48px));
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            border: 1px solid #93c5fd;
+            border-radius: 12px;
+            background: #ffffff;
+            box-shadow: 0 18px 50px rgba(15, 23, 42, 0.25);
+            overflow: hidden;
+        }
+
+        .floating-summary-panel[hidden] {
+            display: none;
+        }
+
+        .floating-summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #dbeafe;
+            background: #eff6ff;
+            cursor: move;
+            user-select: none;
+            touch-action: none;
+        }
+
+        .floating-summary-header button {
+            cursor: pointer;
+        }
+
+        .floating-summary-panel.is-dragging {
+            opacity: 0.96;
+        }
+
+        .floating-summary-panel.is-dragging .floating-summary-header {
+            cursor: grabbing;
+        }
+
+        .floating-summary-header strong {
+            color: #1e3a8a;
+        }
+
+        .floating-summary-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .floating-summary-tabs {
+            display: flex;
+            gap: 6px;
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5e7eb;
+            background: #f8fafc;
+            overflow-x: auto;
+        }
+
+        .floating-summary-tabs button {
+            padding: 7px 9px;
+            border-color: #cbd5e1;
+            color: #1f2937;
+            background: #ffffff;
+            font-size: 13px;
+        }
+
+        .floating-summary-tabs button.active {
+            border-color: #2563eb;
+            color: #ffffff;
+            background: #2563eb;
+        }
+
+        .floating-summary-body {
+            min-height: 260px;
+            padding: 14px;
+            overflow: auto;
+        }
+
+        .floating-summary-body h3 {
+            margin: 0 0 10px;
+            color: #1e3a8a;
+            font-size: 18px;
+        }
+
+        .case-study-side {
+            display: grid;
+            gap: 10px;
+            position: sticky;
+            top: 12px;
+        }
+
+        .case-study-side .case-study-nav {
+            position: static;
+        }
+
+        .saved-summary-sidebar {
+            margin-left: 10px;
+            padding: 8px 8px 8px 10px;
+            border: 1px solid #e9d5ff;
+            border-left: 4px solid #a855f7;
+            border-radius: 8px;
+            background: #faf5ff;
+        }
+
+        .saved-summary-sidebar strong {
+            display: block;
+            margin-bottom: 6px;
+            color: #6b21a8;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        .saved-summary-item {
+            display: grid;
+            gap: 3px;
+            margin-top: 6px;
+            padding: 7px;
+            border: 1px solid #e9d5ff;
+            border-radius: 6px;
+            background: #ffffff;
+        }
+
+        .saved-summary-item button {
+            padding: 0;
+            border: 0;
+            color: #6d28d9;
+            background: transparent;
+            text-align: left;
+            white-space: normal;
+            font-size: 12px;
+            line-height: 1.25;
+            font-weight: 700;
+        }
+
+        .saved-summary-item small {
+            color: #7e22ce;
+            font-size: 11px;
+        }
+
+        .saved-summary-delete {
+            color: #991b1b !important;
+            font-size: 11px !important;
+            font-weight: 400 !important;
+        }
+
+        /* Visual refresh aligned with the client overview page. */
+        .top {
+            margin-bottom: 20px;
+            padding: 16px 18px;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-card);
+            background: var(--color-surface);
+            box-shadow: var(--shadow-header);
+        }
+
+        .compact-grid {
+            gap: 10px 16px;
+        }
+
+        .compact-item span,
+        .selected-documents-count,
+        .muted,
+        .pdf-help,
+        .pdf-card-type,
+        .include-rule-option,
+        .pdf-card-date {
+            color: var(--color-muted);
+        }
+
+        .compact-item strong,
+        .compact-value,
+        .background-status-row strong,
+        .rich-ai-text strong,
+        .case-study-header-title strong {
+            color: inherit;
+        }
+
+        .pdf-card {
+            border-color: var(--color-border);
+            border-radius: var(--radius-control);
+            box-shadow: 0 1px 5px rgba(15, 23, 42, 0.07);
+            transition: all 0.18s ease;
+        }
+
+        .pdf-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+        }
+
+        .pdf-card:not(.pdf-card-metadata-only) {
+            border-color: #b8c6d8;
+        }
+
+        .pdf-card.selected {
+            border-color: #4c84ff;
+            background: #f5f9ff;
+            box-shadow: 0 0 0 2px rgba(76, 132, 255, 0.12);
+        }
+
+        .pdf-card.selected .pdf-card-checkbox {
+            background: #eaf2ff;
+        }
+
+        .pdf-card-open {
+            color: var(--color-text);
+            font-family: inherit;
+            transition: background 0.18s ease;
+        }
+
+        .pdf-card-title,
+        .pdf-card:not(.pdf-card-metadata-only) .pdf-card-title {
+            color: var(--color-primary);
+        }
+
+        .pdf-card-links,
+        .floating-summary-tabs {
+            border-color: var(--color-border);
+        }
+
+        .ai-action-button,
+        .include-case-button,
+        .case-study-nav button.active,
+        .floating-summary-tabs button.active {
+            border-color: var(--color-primary);
+            background: var(--color-primary);
+        }
+
+        .ai-action-button:hover:not(:disabled),
+        .include-case-button:hover {
+            border-color: var(--color-primary-strong);
+            background: var(--color-primary-strong);
+        }
+
+        .ai-action-button:disabled {
+            border-color: var(--color-border);
+            color: var(--color-muted);
+            background: #e8edf3;
+            box-shadow: none;
+        }
+
+        .pdf-preview-panel,
+        .case-study-nav,
+        .summary,
+        .document-summary-launcher,
+        .document-summary-minimized {
+            border-color: var(--color-border);
+            border-radius: var(--radius-card);
+            background: #f8fafc;
+        }
+
+        .doc-frame {
+            border-color: var(--color-border);
+            border-radius: var(--radius-control);
+        }
+
+        .case-study-content,
+        .document-summary-box {
+            border-color: #bfdbfe;
+            border-radius: var(--radius-card);
+            background: #f5f9ff;
+        }
+
+        .case-study-content h3,
+        .floating-summary-body h3,
+        .document-summary-launcher strong,
+        .rich-ai-text h4,
+        .floating-summary-header strong {
+            color: var(--color-primary);
+        }
+
+        .case-study-box {
+            border-color: var(--color-border);
+            border-left-color: var(--color-primary);
+            border-radius: var(--radius-card);
+            background: #f8fafc;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .floating-summary-panel {
+            border-color: var(--color-border);
+            border-radius: var(--radius-card);
+            box-shadow: 0 18px 50px rgba(15, 23, 42, 0.22);
+        }
+
+        .floating-summary-header {
+            border-bottom-color: var(--color-border);
+            background: #f5f9ff;
+        }
+
+        .floating-summary-tabs button,
+        .case-study-nav button {
+            border-color: var(--color-border);
+            border-radius: 8px;
+            color: var(--color-text);
+            background: #fff;
+        }
+
+        .saved-summary-sidebar {
+            border-color: var(--color-border);
+            border-left-color: var(--color-primary);
+            background: #f8fafc;
+        }
+
+        .saved-summary-sidebar strong,
+        .saved-summary-item button,
+        .saved-summary-item small {
+            color: var(--color-primary);
+        }
+
+        .saved-summary-item {
+            border-color: var(--color-border);
+            border-radius: 8px;
+        }
+
+        @media (max-width: 720px) {
+            .top {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .compact-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .compact-item-wide {
+                grid-column: auto;
+            }
+
+            .edit-form {
+                grid-template-columns: 1fr;
+            }
+
+            .edit-wide {
+                grid-column: auto;
+            }
+
+            .doc-frame {
+                height: 420px;
+            }
+
+            .case-study-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .case-study-side {
+                position: static;
+            }
+
+            .case-study-nav {
+                position: static;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+    
+        .case-study-box {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-left: 5px solid #2563eb;
+            border-radius: 10px;
+            padding: 16px;
+        }
+
+        .case-study-box .case-study-content {
+            background: #ffffff;
+            border-color: #dbeafe;
+        }
+
+        .case-study-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .case-study-header-title {
+            display: grid;
+            gap: 3px;
+        }
+
+        .case-study-header-title strong {
+            font-size: 16px;
+        }
+
+        .case-study-header-actions {
+            margin-left: auto;
+        }
+
+        .floating-summary-panel {
+                right: 12px;
+                bottom: 12px;
+                width: calc(100vw - 24px);
+                max-height: calc(100vh - 24px);
+            }
+        }
+    </style>
+</head>
+
+<body>
+<main>
+    <div class="top">
+        <div class="title-row">
+            <h1>{{ client.last_name }} {{ client.first_name }}</h1>
+        </div>
+
+        <div class="actions">
+            <a class="button button-light" href="{{ url_for('index') }}">Zpět</a>
+            <a class="button button-light" href="#upravit-klienta">Upravit data klienta</a>
+
+            <form method="post" action="{{ url_for('delete_client', client_id=client.id) }}" onsubmit="return confirm('Smazat klienta?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="danger" type="submit">Smazat klienta</button>
+            </form>
+        </div>
+    </div>
+
+    <section class="edit-panel" id="upravit-klienta">
+        <form class="edit-form" method="post" action="{{ url_for('update_client', client_id=client.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <label>Jméno
+                <input name="first_name" value="{{ client.first_name }}" required>
+            </label>
+
+            <label>Příjmení
+                <input name="last_name" value="{{ client.last_name }}" required>
+            </label>
+
+            <label>Datum narození
+                <input type="date" name="birth_date" value="{{ client.birth_date.isoformat() }}" required>
+            </label>
+
+            <label>Projekt
+                <select name="project">
+                    <option value="">Bez projektu</option>
+                    {% for project in project_filter_options %}
+                        <option value="{{ project }}" {% if client.project == project %}selected{% endif %}>{{ project }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>Poslední kontrola
+                <input type="datetime-local" name="last_checked_at" value="{{ client.last_checked_at|datetime_local }}">
+            </label>
+
+            {% if case %}
+                <h2>Insolvenční údaje</h2>
+
+                <label>Stav řízení
+                    <input name="state" value="{{ case.state or '' }}">
+                </label>
+
+                <label class="edit-wide">Dlužník
+                    <input name="debtor_name" value="{{ case.debtor_name or '' }}">
+                </label>
+
+                <label>Spisová značka
+                    <input name="spisova_znacka" value="{{ case.spisova_znacka or '' }}">
+                </label>
+
+                <label>Datum zahájení
+                    <input type="datetime-local" name="proceeding_started_at" value="{{ case.proceeding_started_at|datetime_local }}">
+                </label>
+
+                <label>Datum poslední události
+                    <input type="datetime-local" name="last_event_at" value="{{ case.last_event_at|datetime_local }}">
+                </label>
+
+                <label class="edit-wide">Poslední událost
+                    <input name="last_event_description" value="{{ case.last_event_description or '' }}">
+                </label>
+
+                <label>Počet dokumentů
+                    <input type="number" min="0" name="document_count" value="{{ case.document_count if case.document_count is not none else '' }}">
+                </label>
+
+                <label>Lhůta přihlášek
+                    <input name="claims_deadline" value="{{ case.claims_deadline or '' }}">
+                </label>
+
+                <label>Přihlášky
+                    <input type="number" min="0" name="claims_count" value="{{ case.claims_count if case.claims_count is not none else '' }}">
+                </label>
+
+                <label>Výše pohledávek
+                    <textarea name="claims_total_amount">{{ case.claims_total_amount or '' }}</textarea>
+                </label>
+            {% endif %}
+
+            <div class="actions">
+                <button type="submit">Uložit</button>
+                <a class="button button-light" href="#">Zavřít</a>
+            </div>
+        </form>
+    </section>
+
+    <section class="summary-strip">
+        <div class="compact-grid">
+            <div class="compact-item">
+                <span>Klient</span>
+                <strong>{{ client.last_name }} {{ client.first_name }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Datum narození</span>
+                <strong>{{ client.birth_date|format_date }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Projekt</span>
+                <strong>{{ client.project or "-" }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Poslední kontrola</span>
+                <strong>{{ client.last_checked_at|format_datetime }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Stav řízení</span>
+                <strong><span class="status {{ status_class(case) }}">{{ clean_status(case) }}</span></strong>
+            </div>
+
+            <div class="compact-item compact-item-wide">
+                <span>Dlužník</span>
+                <strong>{{ case.debtor_name if case and case.debtor_name else "-" }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Spisová značka</span>
+                <strong>{{ case.spisova_znacka if case else "-" }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Datum zahájení</span>
+                <strong>{{ case.proceeding_started_at|format_datetime if case else "-" }}</strong>
+            </div>
+
+            <div class="compact-item compact-item-wide">
+                <span>Poslední událost</span>
+                <strong>{{ event_line(case) }}</strong>
+            </div>
+
+            <div class="compact-item">
+                <span>Hlavní dokumenty</span>
+                {% set doc_counts = document_counts(case) %}
+                <strong>{{ doc_counts.main if doc_counts.main else "-" }}</strong>
+                {% if doc_counts.secondary %}
+                    <small>Vedlejší: {{ doc_counts.secondary }}</small>
+                {% endif %}
+            </div>
+
+            <div class="compact-item">
+                <span>Lhůta přihlášek</span>
+                <strong>{{ effective_claim_deadline_label(case) }}</strong>
+            </div>
+
+            {% set review_claims = structured_claims_review_summary(case) %}
+            {% set running_claim_collection = claim_collection_is_running(case) %}
+            <div class="compact-item">
+                <span>{% if running_claim_collection %}Přihlášky{% else %}Přezkoumané přihlášky{% endif %}</span>
+                {% if running_claim_collection %}
+                    <strong>{{ case.claims_count if case and case.claims_count else "-" }}{% if case and case.claims_count %} !{% endif %}</strong>
+                {% else %}
+                    <strong>{{ review_claims.claims_count if review_claims.claims_count else (case.claims_count if case and case.claims_count else "-") }}</strong>
+                {% endif %}
+            </div>
+
+            <div class="compact-item compact-item-wide">
+                <span>{% if running_claim_collection %}Výše pohledávek{% else %}Přiznané / přezkoumané pohledávky{% endif %}</span>
+                {% if running_claim_collection %}
+                    {% set claims_amount = case.claims_total_amount if case and case.claims_total_amount else "" %}
+                    {% if claims_amount|length > 80 %}
+                        <div class="compact-value">
+                            {{ claims_amount[:80] }}...
+                            <details class="expand-value">
+                                <summary>Zobrazit více</summary>
+                                {{ claims_amount }}
+                            </details>
+                        </div>
+                    {% else %}
+                        <strong>{{ claims_amount or "-" }}{% if claims_amount %} !{% endif %}</strong>
+                    {% endif %}
+                    {% if claims_amount or (case and case.claims_count) %}
+                        <small>{{ claim_collection_warning() }}</small>
+                    {% endif %}
+                {% else %}
+                    {% if review_claims.claims_total %}
+                        <strong>{{ money_label(review_claims.claims_total) }}</strong>
+                        {% if review_claims.reviewed_at %}<small>Přezkum: {{ review_claims.reviewed_at }}</small>{% endif %}
+                    {% else %}
+                        <strong>{{ case.claims_total_amount if case and case.claims_total_amount else "-" }}</strong>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+
+
+    <section class="background-status-row" id="background-status-row" aria-live="polite">
+        {% if case %}
+            {% if case.ai_summary and (case.ai_summary.startswith("AI shrnutí se připravuje") or case.ai_summary.startswith("AI shrnutí vybraných dokumentů se připravuje")) %}
+                <span class="background-status-pill background-status-working">AI vytváří shrnutí dokumentů</span>
+            {% elif case.ai_summary and case.ai_summary.startswith("AI ověření údajů") %}
+                <span class="background-status-pill background-status-working">AI ověřuje údaje</span>
+            {% elif case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje") %}
+                <span class="background-status-pill background-status-working">AI aktualizuje kazuistiku</span>
+            {% elif case.ai_category and ("selhala" in case.ai_category|lower or "selhalo" in case.ai_category|lower) %}
+                <span class="background-status-pill background-status-error">Poslední AI úloha selhala</span>
+            {% else %}
+                <span class="background-status-pill background-status-idle">Bez běžící AI úlohy</span>
+            {% endif %}
+
+            {% if case.ai_case_study_at %}
+                <span><strong>Kazuistika:</strong> {{ case.ai_case_study_at|format_datetime }}</span>
+            {% endif %}
+
+            {% if case.ai_checked_at %}
+                <span><strong>Shrnutí/ověření:</strong> {{ case.ai_checked_at|format_datetime }}</span>
+            {% endif %}
+        {% else %}
+            <span class="background-status-pill background-status-idle">Bez insolvenčního řízení</span>
+        {% endif %}
+    </section>
+
+    <section class="section">
+        {% if case %}
+            {% set documents = sorted_documents(case) %}
+
+            {% if documents %}
+                <form
+                    id="document-summary-form"
+                    method="post"
+                    action="{{ url_for('analyze_case', case_id=case.id) }}"
+                    onsubmit="return validateDocumentSelection();"
+                >
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next" value="{{ url_for('client_detail', client_id=client.id) }}">
+                </form>
+
+                <div class="section-header document-section-header">
+                        <h2>Dokumenty</h2>
+                        <div class="document-toolbar">
+                            <span class="selected-documents-count" id="selected-documents-count">Vybráno: 0</span>
+                            <button class="ai-action-button" id="document-summary-submit" type="submit" form="document-summary-form" disabled>Vytvořit AI shrnutí</button>
+                        </div>
+                    </div>
+
+                    <div class="pdf-card-strip" aria-label="Seznam PDF dokumentů">
+                        {% for document in documents %}
+                            {% set is_downloaded = document_downloaded(document) %}
+                            <div class="pdf-card{% if not is_downloaded %} pdf-card-metadata-only{% endif %}">
+                                {% if is_downloaded %}
+                                    <label class="pdf-card-checkbox">
+                                        <input
+                                            type="checkbox"
+                                            name="document_ids"
+                                            value="{{ document.id }}"
+                                            form="document-summary-form"
+                                            data-document-title="{{ document.title or document.document_type }}"
+                                            aria-label="Vybrat dokument {{ document.title or document.document_type }}"
+                                        >
+                                    </label>
+                                {% else %}
+                                    <div class="pdf-card-checkbox" title="Dokument je evidovaný z ISIR, ale PDF se nestahuje automaticky."></div>
+                                {% endif %}
+
+                                {% if is_downloaded %}
+                                    <button
+                                        type="button"
+                                        class="pdf-card-open"
+                                        data-preview-url="{{ url_for('open_document', document_id=document.id) }}"
+                                        data-title="{{ document.title or document.document_type }}"
+                                        data-date="{{ document.event_at|format_datetime if document.event_at else '-' }}"
+                                    >
+                                {% else %}
+                                    <a
+                                        class="pdf-card-open"
+                                        href="{{ document.source_url or '#' }}"
+                                        target="_blank"
+                                        rel="noopener"
+                                        title="Otevřít dokument přímo v ISIR"
+                                    >
+                                {% endif %}
+                                    <span class="pdf-card-date">
+                                        {{ document.event_at|format_date if document.event_at else "-" }}
+                                    </span>
+
+                                    <span class="pdf-card-title" title="{{ document.title or document.document_type }}">
+                                        {{ document.title or document.document_type }}
+                                    </span>
+
+                                    <span class="pdf-card-type">
+                                        {{ document.document_type or "PDF" }}
+                                        {% if not is_downloaded %}
+                                            <span class="pdf-card-meta-badge">jen ISIR odkaz</span>
+                                        {% endif %}
+                                    </span>
+                                {% if is_downloaded %}
+                                    </button>
+                                {% else %}
+                                    </a>
+                                {% endif %}
+
+                                <div class="pdf-card-links">
+                                    {% if is_downloaded %}
+                                        <a class="button button-light" href="{{ url_for('open_document', document_id=document.id) }}" target="_blank" rel="noopener">
+                                            Otevřít
+                                        </a>
+
+                                        <a class="button button-light" href="{{ url_for('download_document', document_id=document.id) }}">
+                                            Stáhnout
+                                        </a>
+                                    {% else %}
+                                        <a class="button button-light" href="{{ document.source_url or '#' }}" target="_blank" rel="noopener">
+                                            Otevřít v ISIR
+                                        </a>
+                                        {% if document.source_url %}
+                                            <form method="post" action="{{ url_for('include_document_in_case_study', document_id=document.id) }}">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <input type="hidden" name="next" value="{{ url_for('client_detail', client_id=client.id) }}">
+                                                <label class="include-rule-option">
+                                                    <input type="checkbox" name="create_rule" value="1">
+                                                    Příště automaticky stahovat podobné dokumenty
+                                                </label>
+                                                <button class="include-case-button" type="submit">Stáhnout a zahrnout do kazuistiky</button>
+                                            </form>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+
+                <div id="pdf-preview-panel" class="pdf-preview-panel" hidden>
+                    <div class="pdf-preview-header">
+                        <div>
+                            <strong id="pdf-preview-title">Náhled PDF</strong>
+                            <div class="muted" id="pdf-preview-date"></div>
+                        </div>
+
+                        <button type="button" class="button button-light" id="close-pdf-preview">
+                            Sbalit náhled
+                        </button>
+                    </div>
+
+                    <iframe id="pdf-preview-frame" class="doc-frame" src=""></iframe>
+
+                    <p class="pdf-help">
+                        Pokud se náhled PDF nezobrazí, použijte tlačítko Otevřít nebo Stáhnout.
+                    </p>
+                </div>
+            {% else %}
+                <div class="section-header"><h2>Dokumenty</h2></div>
+                <p class="muted">Dokumenty zatím nejsou stažené.</p>
+            {% endif %}
+
+            <div id="ai-refresh-area">
+                <div class="case-study-status" id="case-study-status">
+                    {% if case_study_pending %}
+                        <span class="ai-working">AI pracuje na kazuistice.</span>
+                    {% endif %}
+                </div>
+
+                {% if case.ai_summary %}
+                    <pre id="document-summary-raw" hidden>{{ case.ai_summary }}</pre>
+                {% elif case.ai_category %}
+                    <p class="muted">{{ case.ai_category }}</p>
+                {% endif %}
+
+                <div class="summary case-study-box" id="kazuistika-ai">
+                    <div class="case-study-header">
+                        <div class="case-study-header-title">
+                            <strong>Kazuistika AI</strong>
+                            {% if case.ai_case_study_at %}
+                                <span class="muted">{{ case.ai_case_study_at|format_datetime }}</span>
+                            {% endif %}
+                        </div>
+
+                        {% if case.ai_case_study and not case.ai_case_study.startswith("AI kazuistika se připravuje") %}
+                            <div class="case-study-header-actions">
+                                <a class="button button-light" href="{{ url_for('download_case_study', case_id=case.id) }}">
+                                    Stáhnout kazuistiku
+                                </a>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    {% if case.ai_case_study %}
+                        <div class="case-study-layout">
+                            <aside class="case-study-side">
+                                <div class="case-study-nav" id="case-study-nav"></div>
+                                <div class="saved-summary-sidebar" id="saved-summary-sidebar">
+                                    <strong>Minimalizovaná shrnutí</strong>
+                                    <div id="saved-summary-list" class="saved-summary-list"></div>
+                                </div>
+                            </aside>
+
+                            <section class="case-study-content">
+                                <h3 id="case-study-section-title">Kazuistika</h3>
+                                <div id="case-study-section-body" class="rich-ai-text"></div>
+                            </section>
+
+                            <pre id="case-study-raw" hidden>{{ case.ai_case_study }}</pre>
+                        </div>
+                    {% else %}
+                        <p class="muted">
+                            Kazuistika zatím není vytvořená. Vytvoří se automaticky po načtení podstatných dokumentů.
+                        </p>
+                    {% endif %}
+                </div>
+            </div>
+        {% else %}
+            <div class="section-header"><h2>Dokumenty</h2></div>
+            <p class="muted">Insolvenční řízení zatím není k dispozici.</p>
+        {% endif %}
+
+
+        <div id="floating-document-summary" class="floating-summary-panel" hidden>
+            <div class="floating-summary-header">
+                <div>
+                    <strong id="floating-document-summary-title">Shrnutí vybraných dokumentů</strong>
+                    <div class="muted" id="floating-document-summary-meta"></div>
+                </div>
+
+                <div class="floating-summary-actions">
+                    <button type="button" class="button button-light button-small" onclick="minimizeCurrentFloatingSummary()">Minimalizovat</button>
+                    <button type="button" class="button button-light button-small" onclick="closeFloatingDocumentSummary()">Zavřít</button>
+                </div>
+            </div>
+
+            <div class="floating-summary-tabs" id="floating-document-summary-nav"></div>
+
+            <div class="floating-summary-body">
+                <h3 id="floating-document-summary-section-title">Shrnutí dokumentu</h3>
+                <div id="floating-document-summary-section-body" class="rich-ai-text"></div>
+            </div>
+
+            <pre id="floating-document-summary-raw" hidden></pre>
+        </div>
+<script>
+    function minimizeDocumentSummary() {
+        const fullBox = document.getElementById("document-summary-box");
+        const minimizedBox = document.getElementById("document-summary-minimized");
+
+        if (fullBox) {
+            fullBox.hidden = true;
+        }
+
+        if (minimizedBox) {
+            minimizedBox.hidden = false;
+        }
+    }
+
+    function showDocumentSummary() {
+        const fullBox = document.getElementById("document-summary-box");
+        const minimizedBox = document.getElementById("document-summary-minimized");
+
+        if (fullBox) {
+            fullBox.hidden = false;
+        }
+
+        if (minimizedBox) {
+            minimizedBox.hidden = true;
+        }
+    }
+
+
+
+    const DOCUMENT_SUMMARY_CASE_KEY = [
+        {{ (case.spisova_znacka if case else '')|tojson }},
+        {{ client.last_name|tojson }},
+        {{ client.first_name|tojson }},
+        {{ (client.birth_date.isoformat() if client.birth_date else '')|tojson }}
+    ].join("|");
+
+    function makeStorageSafeKey(value) {
+        return String(value || "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "") || "bez_identifikace";
+    }
+
+    const DOCUMENT_SUMMARY_STORAGE_KEY = "isir_document_summaries:" + makeStorageSafeKey(DOCUMENT_SUMMARY_CASE_KEY);
+    const DOCUMENT_SUMMARY_PENDING_TITLE_KEY = DOCUMENT_SUMMARY_STORAGE_KEY + ":pending_title";
+    const DOCUMENT_SUMMARY_MAX_SAVED = 5;
+    let activeFloatingSummary = null;
+
+    function getStoredDocumentSummaries() {
+        try {
+            const raw = localStorage.getItem(DOCUMENT_SUMMARY_STORAGE_KEY);
+            const data = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(data)) {
+                return [];
+            }
+            return data.filter(function (item) {
+                return item && item.caseKey === DOCUMENT_SUMMARY_CASE_KEY && item.content;
+            });
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function saveStoredDocumentSummaries(items) {
+        try {
+            const cleanedItems = items
+                .filter(function (item) {
+                    return item && item.content;
+                })
+                .map(function (item) {
+                    return Object.assign({}, item, { caseKey: DOCUMENT_SUMMARY_CASE_KEY });
+                })
+                .slice(0, DOCUMENT_SUMMARY_MAX_SAVED);
+
+            localStorage.setItem(DOCUMENT_SUMMARY_STORAGE_KEY, JSON.stringify(cleanedItems));
+        } catch (error) {
+            // Pokud je localStorage plné nebo zakázané, aplikace poběží dál bez historie shrnutí.
+        }
+    }
+
+    function makeSummaryId(content) {
+        let hash = 0;
+        const text = String(content || "");
+        for (let index = 0; index < text.length; index += 1) {
+            hash = ((hash << 5) - hash) + text.charCodeAt(index);
+            hash |= 0;
+        }
+        return "summary_" + Math.abs(hash) + "_" + Date.now();
+    }
+
+    function currentDateTimeLabel() {
+        const now = new Date();
+        return now.toLocaleString("cs-CZ", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+        });
+    }
+
+    function shortenSummaryTitle(value, maxLength) {
+        const text = String(value || "").replace(/\s+/g, " ").trim();
+        const limit = maxLength || 54;
+        if (text.length <= limit) {
+            return text;
+        }
+        return text.slice(0, limit - 1).trim() + "…";
+    }
+
+    function isBadSummaryTitle(value) {
+        const text = String(value || "").trim().toLowerCase();
+        if (!text) {
+            return true;
+        }
+        return (
+            text === "analýza běží"
+            || text === "analyza bezi"
+            || text.includes("běží")
+            || text.includes("bezi")
+            || text.includes("připravuje")
+            || text.includes("pripravuje")
+            || text === "ai shrnutí dokumentu"
+            || text === "shrnutí dokumentu"
+            || text === "shrnutí vybraných dokumentů"
+        );
+    }
+
+    function firstMeaningfulLine(value) {
+        return String(value || "")
+            .split(/\n+/)
+            .map(function (line) {
+                return line
+                    .replace(/\[\[SECTION:[^\]]+\]\]/g, "")
+                    .replace(/^#+\s*/, "")
+                    .replace(/^[-*]\s*/, "")
+                    .replace(/^\d+[.)]\s*/, "")
+                    .replace(/^(Shrnutí|Text|Popis):\s*/i, "")
+                    .trim();
+            })
+            .find(function (line) {
+                return line && line.length > 8;
+            }) || "";
+    }
+
+    function deriveSummaryTitleFromContent(content, createdAt) {
+        const cleaned = stripCodeFence(content || "");
+
+        try {
+            if (cleaned.startsWith("{") || cleaned.startsWith("[")) {
+                const data = JSON.parse(cleaned);
+                if (data && typeof data === "object" && !Array.isArray(data)) {
+                    if (!isBadSummaryTitle(data.category)) {
+                        return shortenSummaryTitle(data.category, 54);
+                    }
+                    if (Array.isArray(data.sections)) {
+                        const summarySection = data.sections.find(function (section) {
+                            return section && (section.id === "summary" || section.title === "Shrnutí");
+                        });
+                        const rawText = summarySection && (summarySection.text || summarySection.body || summarySection.content);
+                        const line = firstMeaningfulLine(typeof rawText === "string" ? rawText : formatValue(rawText, 0));
+                        if (line) {
+                            return shortenSummaryTitle(line, 54);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            // Nevadí, pokračujeme textovou heuristikou.
+        }
+
+        const markedSections = parseMarkedSections(cleaned);
+        const summarySection = markedSections.find(function (section) {
+            return section.key === "summary" || section.title === "Shrnutí";
+        }) || markedSections[0];
+        const line = firstMeaningfulLine(summarySection ? summarySection.body : cleaned);
+
+        if (line) {
+            return shortenSummaryTitle(line, 54);
+        }
+
+        return "Shrnutí dokumentů" + (createdAt ? " – " + createdAt : "");
+    }
+
+    function normalizeSummaryTitle(title, content, createdAt) {
+        if (!isBadSummaryTitle(title)) {
+            return shortenSummaryTitle(title, 54);
+        }
+        return deriveSummaryTitleFromContent(content, createdAt);
+    }
+
+    function openFloatingDocumentSummary(summary) {
+        const panel = document.getElementById("floating-document-summary");
+        const titleElement = document.getElementById("floating-document-summary-title");
+        const metaElement = document.getElementById("floating-document-summary-meta");
+        const rawElement = document.getElementById("floating-document-summary-raw");
+
+        if (!panel || !titleElement || !metaElement || !rawElement || !summary) {
+            return;
+        }
+
+        const normalizedTitle = normalizeSummaryTitle(summary.title, summary.content, summary.createdAt);
+        activeFloatingSummary = Object.assign({}, summary, { title: normalizedTitle });
+        titleElement.textContent = normalizedTitle;
+        metaElement.textContent = summary.createdAt ? "Vytvořeno: " + summary.createdAt : "";
+        rawElement.textContent = summary.content || "";
+
+        panel.hidden = false;
+        initFloatingSummaryDrag();
+        initSectionViewer(
+            "floating-document-summary-raw",
+            "floating-document-summary-nav",
+            "floating-document-summary-section-title",
+            "floating-document-summary-section-body",
+            "Shrnutí dokumentu"
+        );
+    }
+
+    function makeDocumentSummaryTitleFromCheckboxes(checkboxes) {
+        const titles = Array.from(checkboxes || [])
+            .filter(function (checkbox) {
+                return checkbox.checked;
+            })
+            .map(function (checkbox) {
+                const explicitTitle = checkbox.dataset.documentTitle || "";
+                if (explicitTitle.trim()) {
+                    return explicitTitle.trim();
+                }
+                const card = checkbox.closest(".pdf-card");
+                const titleElement = card ? card.querySelector(".pdf-card-title") : null;
+                return titleElement ? titleElement.textContent.trim() : "";
+            })
+            .filter(Boolean);
+
+        if (!titles.length) {
+            return "Shrnutí vybraných dokumentů";
+        }
+
+        if (titles.length === 1) {
+            return "Shrnutí – " + shortenSummaryTitle(titles[0], 70);
+        }
+
+        return "Shrnutí – " + shortenSummaryTitle(titles[0], 52) + " + další " + (titles.length - 1);
+    }
+
+    function openCurrentDocumentSummary() {
+        const rawElement = document.getElementById("document-summary-raw");
+        const content = rawElement ? (rawElement.textContent || "").trim() : "";
+
+        if (!content || isPendingSummaryContent(content)) {
+            return;
+        }
+
+        const createdAt = currentDateTimeLabel();
+        const serverTitle = {{ (case.ai_category or 'Shrnutí vybraných dokumentů')|tojson }};
+        const pendingTitle = sessionStorage.getItem(DOCUMENT_SUMMARY_PENDING_TITLE_KEY) || "";
+        const finalTitle = pendingTitle || serverTitle;
+        sessionStorage.removeItem(DOCUMENT_SUMMARY_PENDING_TITLE_KEY);
+
+        openFloatingDocumentSummary({
+            id: makeSummaryId(content),
+            caseKey: DOCUMENT_SUMMARY_CASE_KEY,
+            title: normalizeSummaryTitle(finalTitle, content, createdAt),
+            createdAt: createdAt,
+            content: content
+        });
+    }
+
+    function closeFloatingDocumentSummary() {
+        const panel = document.getElementById("floating-document-summary");
+        if (panel) {
+            panel.hidden = true;
+        }
+    }
+
+    function minimizeCurrentFloatingSummary() {
+        if (!activeFloatingSummary || !activeFloatingSummary.content) {
+            closeFloatingDocumentSummary();
+            return;
+        }
+
+        const items = getStoredDocumentSummaries();
+        const duplicateIndex = items.findIndex(function (item) {
+            return item.content === activeFloatingSummary.content;
+        });
+
+        if (duplicateIndex >= 0) {
+            items.splice(duplicateIndex, 1);
+        }
+
+        items.unshift({
+            id: activeFloatingSummary.id || makeSummaryId(activeFloatingSummary.content),
+            caseKey: DOCUMENT_SUMMARY_CASE_KEY,
+            title: normalizeSummaryTitle(activeFloatingSummary.title, activeFloatingSummary.content, activeFloatingSummary.createdAt),
+            createdAt: activeFloatingSummary.createdAt || currentDateTimeLabel(),
+            content: activeFloatingSummary.content
+        });
+
+        saveStoredDocumentSummaries(items);
+        renderSavedDocumentSummaries();
+        closeFloatingDocumentSummary();
+    }
+
+    function deleteSavedDocumentSummary(id) {
+        const items = getStoredDocumentSummaries().filter(function (item) {
+            return item.id !== id;
+        });
+        saveStoredDocumentSummaries(items);
+        renderSavedDocumentSummaries();
+    }
+
+    function renderSavedDocumentSummaries() {
+        const listElement = document.getElementById("saved-summary-list");
+        if (!listElement) {
+            return;
+        }
+
+        const items = getStoredDocumentSummaries();
+        listElement.innerHTML = "";
+
+        if (!items.length) {
+            const empty = document.createElement("div");
+            empty.className = "muted";
+            empty.style.fontSize = "12px";
+            empty.textContent = "Zatím žádné.";
+            listElement.appendChild(empty);
+            return;
+        }
+
+        items.forEach(function (item) {
+            const wrapper = document.createElement("div");
+            wrapper.className = "saved-summary-item";
+
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.textContent = normalizeSummaryTitle(item.title, item.content, item.createdAt);
+            openButton.addEventListener("click", function () {
+                openFloatingDocumentSummary(item);
+            });
+
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "saved-summary-delete";
+            deleteButton.textContent = "Smazat";
+            deleteButton.addEventListener("click", function () {
+                deleteSavedDocumentSummary(item.id);
+            });
+
+            wrapper.appendChild(openButton);
+            wrapper.appendChild(deleteButton);
+            listElement.appendChild(wrapper);
+        });
+    }
+
+    function autoOpenFreshDocumentSummary() {
+        const rawElement = document.getElementById("document-summary-raw");
+        const content = rawElement ? (rawElement.textContent || "").trim() : "";
+
+        if (!content || isPendingSummaryContent(content)) {
+            return;
+        }
+
+        const markerKey = DOCUMENT_SUMMARY_STORAGE_KEY + ":last_auto_opened";
+        const contentMarker = String(content.length) + ":" + content.slice(0, 80);
+
+        if (localStorage.getItem(markerKey) === contentMarker) {
+            return;
+        }
+
+        localStorage.setItem(markerKey, contentMarker);
+        openCurrentDocumentSummary();
+    }
+
+    function validateDocumentSelection() {
+        const checkedDocuments = document.querySelectorAll('input[name="document_ids"]:checked');
+
+        if (!checkedDocuments.length) {
+            alert("Vyberte alespoň jeden dokument pro AI shrnutí.");
+            return false;
+        }
+
+        try {
+            sessionStorage.setItem(
+                DOCUMENT_SUMMARY_PENDING_TITLE_KEY,
+                makeDocumentSummaryTitleFromCheckboxes(checkedDocuments)
+            );
+        } catch (error) {
+            // Bez sessionStorage se použije náhradní název z výsledku AI.
+        }
+
+        const submitButton = document.getElementById("document-summary-submit");
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = "Shrnutí se připravuje…";
+        }
+        return true;
+    }
+
+    function initDocumentSelectionState() {
+        const checkboxes = Array.from(document.querySelectorAll('input[name="document_ids"]'));
+        const submitButton = document.getElementById("document-summary-submit");
+        const counter = document.getElementById("selected-documents-count");
+
+        if (!checkboxes.length) {
+            if (submitButton) {
+                submitButton.disabled = true;
+            }
+            if (counter) {
+                counter.textContent = "Vybráno: 0";
+            }
+            return;
+        }
+
+        function updateSelectionState() {
+            const selectedCount = checkboxes.filter(function (checkbox) {
+                return checkbox.checked;
+            }).length;
+
+            checkboxes.forEach(function (checkbox) {
+                const card = checkbox.closest(".pdf-card");
+                if (card) {
+                    card.classList.toggle("selected", checkbox.checked);
+                }
+            });
+
+            if (counter) {
+                counter.textContent = "Vybráno: " + selectedCount;
+            }
+
+            if (submitButton) {
+                submitButton.disabled = selectedCount === 0;
+                submitButton.textContent = selectedCount > 0
+                    ? "Vytvořit AI shrnutí"
+                    : "Vytvořit AI shrnutí";
+            }
+        }
+
+        checkboxes.forEach(function (checkbox) {
+            checkbox.addEventListener("change", updateSelectionState);
+        });
+
+        updateSelectionState();
+    }
+
+    function initPdfPreview() {
+        const previewPanel = document.getElementById("pdf-preview-panel");
+        const previewFrame = document.getElementById("pdf-preview-frame");
+        const previewTitle = document.getElementById("pdf-preview-title");
+        const previewDate = document.getElementById("pdf-preview-date");
+        const closePreviewButton = document.getElementById("close-pdf-preview");
+
+        if (!previewPanel || !previewFrame || !previewTitle || !previewDate) {
+            return;
+        }
+
+        document.querySelectorAll(".pdf-card-open[data-preview-url]").forEach(function (button) {
+            button.addEventListener("click", function () {
+                const url = button.dataset.previewUrl;
+                const title = button.dataset.title || "Náhled PDF";
+                const date = button.dataset.date || "";
+
+                previewFrame.src = url;
+                previewTitle.textContent = title;
+                previewDate.textContent = date;
+
+                previewPanel.hidden = false;
+
+                const cardsStrip = document.querySelector(".pdf-card-strip");
+                if (cardsStrip) {
+                    cardsStrip.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+            });
+        });
+
+        if (closePreviewButton) {
+            closePreviewButton.addEventListener("click", function () {
+                previewPanel.hidden = true;
+                previewFrame.src = "";
+            });
+        }
+    }
+
+    function stripCodeFence(rawText) {
+        const text = (rawText || "").trim();
+        const fenceMatch = text.match(/^```(?:json|text|markdown)?\s*([\s\S]*?)\s*```$/i);
+        return fenceMatch ? fenceMatch[1].trim() : text;
+    }
+
+    function humanizeKey(key) {
+        const labels = {
+            category: "Typ dokumentu",
+            document_date: "Datum dokumentu",
+            document_dates: "Data dokumentů",
+            document_scope: "Rozsah dokumentů",
+            summary: "Shrnutí",
+            text: "Text",
+            deadlines_and_obligations: "Lhůty a povinnosti",
+            deadlines: "Lhůty",
+            obligations: "Povinnosti",
+            date_or_period: "Datum / lhůta",
+            description: "Popis",
+            recipient: "Komu / kam",
+            obligation: "Povinnost",
+            deadline: "Lhůta",
+            source_document: "Zdrojový dokument",
+            source_certainty: "Jistota zdroje",
+            other_information_and_recommendations: "Ostatní informace a doporučení",
+            important_information: "Důležité informace",
+            debt_advisor_recommendations: "Doporučení pro poradce",
+            unclear_or_incomplete_information: "Nejasné nebo neúplné údaje",
+            confidence: "Jistota shrnutí",
+            note: "Poznámka",
+            content: "Obsah"
+        };
+
+        if (labels[key]) {
+            return labels[key];
+        }
+
+        return String(key)
+            .replace(/_/g, " ")
+            .replace(/\b\w/g, function (letter) {
+                return letter.toUpperCase();
+            });
+    }
+
+    function formatValue(value, level) {
+        const indent = "  ".repeat(level || 0);
+
+        if (value === null || value === undefined || value === "") {
+            return "";
+        }
+
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+            return String(value);
+        }
+
+        if (Array.isArray(value)) {
+            if (!value.length) {
+                return "";
+            }
+
+            return value.map(function (item) {
+                if (item && typeof item === "object") {
+                    const formatted = formatValue(item, (level || 0) + 1);
+                    return formatted ? indent + "- " + formatted.replace(/\n/g, "\n" + indent + "  ") : "";
+                }
+
+                return indent + "- " + String(item);
+            }).filter(Boolean).join("\n");
+        }
+
+        if (typeof value === "object") {
+            return Object.keys(value).map(function (key) {
+                const formatted = formatValue(value[key], (level || 0) + 1);
+                if (!formatted) {
+                    return "";
+                }
+                return indent + humanizeKey(key) + ":\n" + formatted;
+            }).filter(Boolean).join("\n\n");
+        }
+
+        return String(value);
+    }
+
+    function tryParseJsonSections(rawText, fallbackTitle) {
+        const cleaned = stripCodeFence(rawText);
+
+        if (!cleaned || !(cleaned.startsWith("{") || cleaned.startsWith("["))) {
+            return [];
+        }
+
+        let data;
+        try {
+            data = JSON.parse(cleaned);
+        } catch (error) {
+            return [];
+        }
+
+        if (Array.isArray(data)) {
+            return [{
+                key: "json",
+                title: fallbackTitle,
+                body: formatValue(data, 0)
+            }];
+        }
+
+        if (Array.isArray(data.sections) && data.sections.length) {
+            return data.sections.map(function (section, index) {
+                return {
+                    key: section.id || section.key || "section_" + index,
+                    title: section.title || "Část " + (index + 1),
+                    body: formatValue(section.content !== undefined ? section.content : section.body, 0)
+                };
+            }).filter(function (section) {
+                return section.body.trim();
+            });
+        }
+
+        const summaryBody = data.summary || data.text || "";
+
+        const deadlinesBody = formatValue({
+            deadlines: data.deadlines || (data.deadlines_and_obligations && data.deadlines_and_obligations.deadlines) || [],
+            obligations: data.obligations || (data.deadlines_and_obligations && data.deadlines_and_obligations.obligations) || [],
+            note: data.note || (data.deadlines_and_obligations && data.deadlines_and_obligations.note) || ""
+        }, 0);
+
+        const otherSource = data.other_information_and_recommendations || data.other || {};
+        const limits = data.limits || {};
+        const otherBody = formatValue({
+            important_information: data.important_information || otherSource.important_information || [],
+            debt_advisor_recommendations: data.debt_advisor_recommendations || otherSource.debt_advisor_recommendations || [],
+            unclear_or_incomplete_information: data.unclear_or_incomplete_information || otherSource.unclear_or_incomplete_information || limits.unclear_or_incomplete_information || [],
+            confidence: data.confidence || ""
+        }, 0);
+
+        const sections = [];
+
+        if (summaryBody) {
+            sections.push({ key: "summary", title: "Shrnutí", body: formatValue(summaryBody, 0) });
+        }
+
+        if (deadlinesBody.trim()) {
+            sections.push({ key: "deadlines", title: "Lhůty a povinnosti", body: deadlinesBody });
+        }
+
+        if (otherBody.trim()) {
+            sections.push({ key: "other", title: "Ostatní informace a doporučení", body: otherBody });
+        }
+
+        if (!sections.length) {
+            sections.push({ key: "json", title: fallbackTitle, body: formatValue(data, 0) });
+        }
+
+        return sections;
+    }
+
+    function parseMarkedSections(rawText) {
+        const sectionRegex = /\[\[SECTION:([^:\]]+):([^\]]+)\]\]\s*([\s\S]*?)(?=\[\[SECTION:|$)/g;
+        const sections = [];
+        let match;
+
+        while ((match = sectionRegex.exec(rawText || "")) !== null) {
+            sections.push({
+                key: match[1],
+                title: match[2],
+                body: match[3].trim()
+            });
+        }
+
+        return sections;
+    }
+
+    function escapeHtml(value) {
+        return String(value || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function formatInlineText(value) {
+        const escaped = escapeHtml(value);
+        return escaped.replace(/^([^:\n]{2,60}):\s*/, "<strong>$1:</strong> ");
+    }
+
+    function looksLikeHeading(line) {
+        if (!line || line.length > 80) {
+            return false;
+        }
+
+        if (/^#{1,4}\s+/.test(line)) {
+            return true;
+        }
+
+        if (/^[-•]\s+/.test(line)) {
+            return false;
+        }
+
+        return /^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ0-9][^:]{2,70}:\s*$/.test(line);
+    }
+
+    function looksLikeDateLine(line) {
+        return /^[-•]?\s*(\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\.\d{1,2}\.\s*[–-]|\d{4}-\d{2}-\d{2})\s*[–-]/.test(line);
+    }
+
+    function renderRichAiText(rawText) {
+        const lines = String(rawText || "").replace(/\r\n/g, "\n").split("\n");
+        const html = [];
+        let paragraph = [];
+        let listItems = [];
+
+        function flushParagraph() {
+            if (!paragraph.length) {
+                return;
+            }
+
+            html.push("<p>" + paragraph.join(" ") + "</p>");
+            paragraph = [];
+        }
+
+        function flushList() {
+            if (!listItems.length) {
+                return;
+            }
+
+            html.push("<ul>" + listItems.map(function (item) {
+                return "<li>" + item + "</li>";
+            }).join("") + "</ul>");
+
+            listItems = [];
+        }
+
+        lines.forEach(function (rawLine) {
+            const line = rawLine.trim();
+
+            if (!line) {
+                flushParagraph();
+                flushList();
+                return;
+            }
+
+            if (looksLikeHeading(line)) {
+                flushParagraph();
+                flushList();
+
+                const heading = line.replace(/^#{1,4}\s+/, "").replace(/:\s*$/, "");
+                html.push("<h4>" + escapeHtml(heading) + "</h4>");
+                return;
+            }
+
+            const bulletMatch = line.match(/^[-•]\s+(.*)$/);
+            if (bulletMatch) {
+                flushParagraph();
+                listItems.push(formatInlineText(bulletMatch[1]));
+                return;
+            }
+
+            if (looksLikeDateLine(line)) {
+                flushParagraph();
+                flushList();
+
+                const cleaned = line.replace(/^[-•]\s+/, "");
+                html.push('<div class="ai-date-line">' + formatInlineText(cleaned) + "</div>");
+                return;
+            }
+
+            flushList();
+            paragraph.push(formatInlineText(line));
+        });
+
+        flushParagraph();
+        flushList();
+
+        return html.join("") || "<p>Bez obsahu.</p>";
+    }
+
+    function initSectionViewer(rawId, navId, titleId, bodyId, fallbackTitle) {
+        const rawElement = document.getElementById(rawId);
+        const navElement = document.getElementById(navId);
+        const titleElement = document.getElementById(titleId);
+        const bodyElement = document.getElementById(bodyId);
+
+        if (!rawElement || !navElement || !titleElement || !bodyElement) {
+            return;
+        }
+
+        const rawText = (rawElement.textContent || "").trim();
+        let sections = parseMarkedSections(rawText);
+
+        if (!sections.length) {
+            sections = tryParseJsonSections(rawText, fallbackTitle);
+        }
+
+        navElement.innerHTML = "";
+
+        if (!sections.length) {
+            navElement.hidden = true;
+            titleElement.textContent = fallbackTitle;
+            bodyElement.innerHTML = renderRichAiText(rawText || "Bez obsahu.");
+            return;
+        }
+
+        if (sections.length === 1) {
+            navElement.hidden = true;
+        } else {
+            navElement.hidden = false;
+        }
+
+        function showSection(sectionKey) {
+            const selected = sections.find(function (section) {
+                return section.key === sectionKey;
+            }) || sections[0];
+
+            titleElement.textContent = selected.title;
+            bodyElement.innerHTML = renderRichAiText(selected.body);
+
+            navElement.querySelectorAll("button").forEach(function (button) {
+                button.classList.toggle("active", button.dataset.sectionKey === selected.key);
+            });
+        }
+
+        sections.forEach(function (section, index) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = section.title;
+            button.dataset.sectionKey = section.key;
+
+            button.addEventListener("click", function () {
+                showSection(section.key);
+            });
+
+            navElement.appendChild(button);
+
+            if (index === 0) {
+                button.classList.add("active");
+            }
+        });
+
+        showSection(sections[0].key);
+    }
+
+    function initCaseStudySections() {
+        initSectionViewer(
+            "case-study-raw",
+            "case-study-nav",
+            "case-study-section-title",
+            "case-study-section-body",
+            "Kazuistika"
+        );
+    }
+
+    function initDocumentSummarySections() {
+        initSectionViewer(
+            "document-summary-raw",
+            "document-summary-nav",
+            "document-summary-section-title",
+            "document-summary-section-body",
+            "Shrnutí dokumentu"
+        );
+    }
+
+    function isPendingSummaryContent(content) {
+        const text = String(content || "").trim().toLowerCase();
+        return text.startsWith("ai shrnutí se připravuje")
+            || text.startsWith("ai shrnutí vybraných dokumentů se připravuje")
+            || text.includes("analýza běží")
+            || text.includes("analyza bezi");
+    }
+
+    function initFloatingSummaryDrag() {
+        const panel = document.getElementById("floating-document-summary");
+        const header = panel ? panel.querySelector(".floating-summary-header") : null;
+        if (!panel || !header || header.dataset.dragReady === "1") {
+            return;
+        }
+        header.dataset.dragReady = "1";
+
+        const positionKey = DOCUMENT_SUMMARY_STORAGE_KEY + ":floating_position";
+
+        function clamp(value, min, max) {
+            return Math.min(Math.max(value, min), max);
+        }
+
+        function applySavedPosition() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(positionKey) || "null");
+                if (!saved || typeof saved.left !== "number" || typeof saved.top !== "number") {
+                    return;
+                }
+                const rect = panel.getBoundingClientRect();
+                const left = clamp(saved.left, 8, Math.max(8, window.innerWidth - rect.width - 8));
+                const top = clamp(saved.top, 8, Math.max(8, window.innerHeight - rect.height - 8));
+                panel.style.left = left + "px";
+                panel.style.top = top + "px";
+                panel.style.right = "auto";
+                panel.style.bottom = "auto";
+            } catch (error) {
+                // Bez uložené pozice se použije výchozí umístění vpravo dole.
+            }
+        }
+
+        header.addEventListener("pointerdown", function (event) {
+            if (event.button !== undefined && event.button !== 0) {
+                return;
+            }
+            if (event.target && event.target.closest("button, a, input, textarea, select")) {
+                return;
+            }
+
+            const rect = panel.getBoundingClientRect();
+            const offsetX = event.clientX - rect.left;
+            const offsetY = event.clientY - rect.top;
+
+            panel.style.left = rect.left + "px";
+            panel.style.top = rect.top + "px";
+            panel.style.right = "auto";
+            panel.style.bottom = "auto";
+            panel.classList.add("is-dragging");
+            header.setPointerCapture(event.pointerId);
+
+            function onPointerMove(moveEvent) {
+                const width = panel.offsetWidth;
+                const height = panel.offsetHeight;
+                const left = clamp(moveEvent.clientX - offsetX, 8, Math.max(8, window.innerWidth - width - 8));
+                const top = clamp(moveEvent.clientY - offsetY, 8, Math.max(8, window.innerHeight - height - 8));
+                panel.style.left = left + "px";
+                panel.style.top = top + "px";
+            }
+
+            function onPointerUp(upEvent) {
+                panel.classList.remove("is-dragging");
+                header.releasePointerCapture(upEvent.pointerId);
+                header.removeEventListener("pointermove", onPointerMove);
+                header.removeEventListener("pointerup", onPointerUp);
+                header.removeEventListener("pointercancel", onPointerUp);
+                try {
+                    const finalRect = panel.getBoundingClientRect();
+                    localStorage.setItem(positionKey, JSON.stringify({ left: finalRect.left, top: finalRect.top }));
+                } catch (error) {
+                    // Pozice je pouze komfortní nastavení.
+                }
+            }
+
+            header.addEventListener("pointermove", onPointerMove);
+            header.addEventListener("pointerup", onPointerUp);
+            header.addEventListener("pointercancel", onPointerUp);
+        });
+
+        window.addEventListener("resize", applySavedPosition);
+        applySavedPosition();
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+        initPdfPreview();
+        initDocumentSelectionState();
+        initCaseStudySections();
+        initDocumentSummarySections();
+        renderSavedDocumentSummaries();
+        initFloatingSummaryDrag();
+        autoOpenFreshDocumentSummary();
+    });
+</script>
+        
+    </section>
+</main>
+
+{% if ai_pending %}
+<script>
+    const aiRefreshTimer = window.setInterval(async function () {
+        try {
+            const response = await fetch(window.location.href, { cache: "no-store" });
+            const html = await response.text();
+            const parsed = new DOMParser().parseFromString(html, "text/html");
+
+            const nextAi = parsed.getElementById("ai-refresh-area");
+            const currentAi = document.getElementById("ai-refresh-area");
+
+            const nextHeader = parsed.querySelector(".summary-strip");
+            const currentHeader = document.querySelector(".summary-strip");
+
+            const nextCaseStudyStatus = parsed.getElementById("case-study-status");
+            const currentCaseStudyStatus = document.getElementById("case-study-status");
+            const nextBackgroundStatusRow = parsed.getElementById("background-status-row");
+            const currentBackgroundStatusRow = document.getElementById("background-status-row");
+
+            if (nextAi && currentAi) {
+                currentAi.innerHTML = nextAi.innerHTML;
+            }
+
+            if (nextHeader && currentHeader) {
+                currentHeader.innerHTML = nextHeader.innerHTML;
+            }
+
+            if (nextCaseStudyStatus && currentCaseStudyStatus) {
+                currentCaseStudyStatus.innerHTML = nextCaseStudyStatus.innerHTML;
+            }
+
+            if (nextBackgroundStatusRow && currentBackgroundStatusRow) {
+                currentBackgroundStatusRow.innerHTML = nextBackgroundStatusRow.innerHTML;
+            }
+
+            if (typeof initDocumentSelectionState === "function") {
+                initDocumentSelectionState();
+            }
+
+            if (typeof initCaseStudySections === "function") {
+                initCaseStudySections();
+            }
+
+            if (typeof initDocumentSummarySections === "function") {
+                initDocumentSummarySections();
+            }
+
+            if (typeof renderSavedDocumentSummaries === "function") {
+                renderSavedDocumentSummaries();
+            }
+
+            if (typeof autoOpenFreshDocumentSummary === "function") {
+                autoOpenFreshDocumentSummary();
+            }
+
+            if (
+                !html.includes("AI shrnutí se připravuje")
+                && !html.includes("AI shrnutí vybraných dokumentů se připravuje")
+                && !html.includes("AI ověření údajů")
+                && !html.includes("AI kazuistika se připravuje")
+            ) {
+                window.clearInterval(aiRefreshTimer);
+            }
+        } catch (error) {
+            window.clearInterval(aiRefreshTimer);
+        }
+    }, 2500);
+</script>
+{% endif %}
+</body>
+</html>

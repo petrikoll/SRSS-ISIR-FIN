@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vložte API klíč</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            color: #1f2937;
+            background: linear-gradient(180deg, #f4f6f9 0%, #eaedf2 50%, #f4f6f9 100%);
+            background-attachment: fixed;
+        }
+        main {
+            width: min(720px, calc(100% - 32px));
+            margin: 28px auto;
+        }
+        .top {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+        h1 { margin: 0; font-size: 26px; }
+        .panel {
+            padding: 16px;
+            background: #fbfdff;
+            border: 1px solid #d8dee4;
+            border-radius: 8px;
+        }
+        label {
+            display: grid;
+            gap: 6px;
+            margin-bottom: 14px;
+            color: #4b5563;
+            font-size: 14px;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #bcc6d0;
+            border-radius: 6px;
+            font-size: 15px;
+        }
+        button,
+        .button {
+            display: inline-block;
+            padding: 9px 12px;
+            border: 1px solid #2563eb;
+            border-radius: 6px;
+            color: #fff;
+            background: #2563eb;
+            font-size: 14px;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .button-light {
+            border-color: #cbd5e1;
+            color: #1f2937;
+            background: #fff;
+        }
+        .notice {
+            margin-bottom: 14px;
+            padding: 10px 12px;
+            border: 1px solid #bbf7d0;
+            border-radius: 8px;
+            color: #166534;
+            background: #f0fdf4;
+        }
+        .muted {
+            color: #6b7280;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <div class="top">
+        <h1>Vložte API klíč</h1>
+        <a class="button button-light" href="{{ url_for('index') }}">Zpět</a>
+    </div>
+
+    <section class="panel">
+        {% if saved %}
+            <div class="notice">API klíč je uložený.</div>
+        {% endif %}
+        {% if has_key %}
+            <p class="muted">Gemini API klíč je nastavený. Novým uložením ho přepíšete.</p>
+        {% else %}
+            <p class="muted">Pro AI kazuistiky a shrnutí dokumentů uložte Gemini API klíč.</p>
+        {% endif %}
+        <form method="post" action="{{ url_for('save_settings_route') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>
+                Gemini API klíč
+                <input type="password" name="gemini_api_key" autocomplete="off" required>
+            </label>
+            <button type="submit">Uložit API klíč</button>
+        </form>
+    </section>
+</main>
+</body>
+</html>
