@@ -27,11 +27,7 @@ pip install -r requirements.txt
 python start_app.py
 ```
 
-Aplikace automaticky spustí lokální server a otevře:
-
-```text
-http://127.0.0.1:5000
-```
+Aplikace automaticky spustí lokální server na `127.0.0.1` s volným portem a otevře své okno. Aktuální adresu obsahuje `server-state.json`. Při spuštění `python app.py` se používá port 5000.
 
 Databáze se ukládá do:
 
@@ -87,7 +83,44 @@ Výstup:
 ISIR-Kontrola-Setup.exe
 ```
 
-Instalátor přenáší aplikaci bez dat. Po prvním spuštění si aplikace vytvoří vlastní prázdnou databázi.
+Současný `installer/install.cmd` aktualizuje program a zachovává existující data. Při první instalaci si aplikace vytvoří prázdnou databázi. Starší instalační balíčky se mohou chovat jinak; před aktualizací stáhněte zálohu.
+
+## Oprava filtrů a záloha dat (1.2)
+
+Ovládání filtrů zůstává dostupné i tehdy, když vybranému filtru neodpovídá žádný klient. Tlačítko **Zrušit všechny filtry** odstraní filtr projektu, stavu i lhůty pouze z cookies prohlížeče. Klientská data se nemění. Odškrtnutí posledního stavu skutečně zruší tento filtr; prázdný výsledek už nezpůsobí automatické zobrazení klientů jiného stavu.
+
+Na hlavní obrazovce a v **Nastavení a záloha dat** je tlačítko **Stáhnout zálohu dat (ZIP)**, dostupné i při prázdném seznamu. ZIP obsahuje:
+
+- `data/app.db`: všechny klienty, řízení, historii změn a uložené AI výstupy;
+- `downloaded_documents/`: stažené dokumenty;
+- případný `data/manual_download_rules.json`: vlastní pravidla stahování;
+- `README.txt`: postup obnovy.
+
+Databáze se kopíruje pomocí SQLite backup API a kontroluje se její integrita. Export původní data nemění. Dokončete nejdřív běžící kontroly, aby se během zálohování neměnil seznam dokumentů. ZIP uložte mimo instalační složku, ideálně také na externí disk. Kopie exportů jsou ve složce `exports` vedle `data`; rozpracovaný archiv se při chybě odstraní. Gemini API klíč a ostatní tajné nastavení se do ZIPu nepřenášejí.
+
+### Obnova po přeinstalaci na stejném PC
+
+Postup platí pro stejný účet Windows a původní instalační cestu `%LOCALAPPDATA%\ISIR-Kontrola`.
+
+1. Úplně ukončete proces `ISIR-Kontrola.exe`, případně ve Správci úloh; zavření okna prohlížeče nemusí ukončit server.
+2. Zkopírujte celou současnou instalační složku jako zálohu před obnovou.
+3. Rozbalte ZIP do samostatné složky. Z instalační podsložky `data` přesuňte původní `app.db` a případné `app.db-wal`, `app.db-shm` a `app.db-journal` do zálohy. Přenos provádějte pouze při vypnutém programu.
+4. Překopírujte `data/app.db` ze ZIPu do instalační podsložky `data`. Překopírujte také `downloaded_documents` a případná vlastní pravidla do odpovídajících složek.
+5. Spusťte aplikaci a ověřte seznam klientů i otevření dokumentů. Pokud přeinstalace odstranila nastavení, zadejte znovu Gemini API klíč.
+
+Pro přenos na jiný PC je potřeba upravit uložené absolutní cesty dokumentů. Tento ruční postup je určený pro obnovu na stejném PC.
+
+### Aktualizace existujícího desktopu
+
+Samotná změna na GitHubu neaktualizuje již nainstalované EXE. Po úplném ukončení aplikace a záloze celé instalační složky nahraďte pouze `ISIR-Kontrola.exe` nově sestavenou verzí. Zachovejte složky `data` a `downloaded_documents`. Pro tuto aktualizaci nespouštějte starý instalátor ani `reset_data.cmd`.
+
+### Ověření změn
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Testy používají dočasnou syntetickou databázi a dokumenty, vypnutý plánovač a žádná síťová volání. Ověřují prázdný výsledek filtrů, jejich zrušení, odškrtnutí posledního stavu, úplnost ZIPu včetně WAL databáze a zachování dat při exportu i jeho selhání.
 
 ## Struktura
 

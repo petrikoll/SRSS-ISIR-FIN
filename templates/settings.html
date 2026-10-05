@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Vložte API klíč</title>
+    <title>Nastavení a záloha dat</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -31,6 +31,7 @@
             background: #fbfdff;
             border: 1px solid #d8dee4;
             border-radius: 8px;
+            margin-bottom: 18px;
         }
         label {
             display: grid;
@@ -80,7 +81,7 @@
 <body>
 <main>
     <div class="top">
-        <h1>Vložte API klíč</h1>
+        <h1>Nastavení a záloha dat</h1>
         <a class="button button-light" href="{{ url_for('index') }}">Zpět</a>
     </div>
 
@@ -101,6 +102,23 @@
             </label>
             <button type="submit">Uložit API klíč</button>
         </form>
+    </section>
+    <section class="panel">
+        <h2>Záloha dat</h2>
+        <p class="muted">Stáhněte ZIP s klienty, historií řízení, AI výstupy a staženými dokumenty. Zálohu uložte mimo instalační složku aplikace, například na externí disk. Gemini API klíč do zálohy nepatří.</p>
+        <a class="button" href="{{ url_for('export_data') }}">Stáhnout zálohu dat (ZIP)</a>
+        <details>
+            <summary>Jak obnovit data po přeinstalaci</summary>
+            <p class="muted">Postup platí pro stejný PC a stejný účet Windows. Podrobný návod je také v souboru README.txt uvnitř zálohy.</p>
+            <ol class="muted">
+                <li>Úplně ukončete ISIR-Kontrola.exe, případně ve Správci úloh.</li>
+                <li>Zkopírujte celou složku <code>%LOCALAPPDATA%\ISIR-Kontrola</code> jako zálohu aktuálního stavu.</li>
+                <li>Rozbalte stažený ZIP do samostatné složky. Ze složky <code>data</code> přesuňte původní <code>app.db</code> a případné <code>app.db-wal</code>, <code>app.db-shm</code> a <code>app.db-journal</code> do zálohy.</li>
+                <li>Překopírujte <code>data/app.db</code>, <code>downloaded_documents</code> a případná vlastní pravidla ze ZIPu do odpovídajících složek aplikace.</li>
+                <li>Spusťte aplikaci a ověřte seznam klientů i otevření dokumentů. Při ztrátě nastavení zadejte znovu Gemini API klíč.</li>
+            </ol>
+        </details>
+        <p class="muted">ISIR Kontrola – oprava filtrů a zálohování, verze 1.2.</p>
     </section>
 </main>
 </body>

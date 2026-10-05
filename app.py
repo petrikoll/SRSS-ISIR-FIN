@@ -891,7 +891,7 @@ def normalize_project_value(value) -> str:
 
 def backup_database_to_zip(zip_file: zipfile.ZipFile) -> None:
     if not DATABASE_PATH.exists():
-        return
+        raise ValueError("Databáze nebyla nalezena. Záloha nebyla vytvořena.")
 
     temp_path = ""
     try:
@@ -902,6 +902,8 @@ def backup_database_to_zip(zip_file: zipfile.ZipFile) -> None:
         target = sqlite3.connect(temp_path)
         try:
             source.backup(target)
+            if target.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("Databáze neprošla kontrolou integrity.")
         finally:
             target.close()
             source.close()
@@ -923,17 +925,43 @@ def add_documents_to_zip(zip_file: zipfile.ZipFile) -> None:
 
 
 def create_data_backup(prefix: str = "isir-data") -> Path:
-    exports_dir = Path("exports")
+    exports_dir = DATABASE_PATH.parent.parent / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = exports_dir / f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as zip_file:
-        backup_database_to_zip(zip_file)
-        add_documents_to_zip(zip_file)
-        zip_file.writestr(
-            "README.txt",
-            "Archiv obsahuje databazi data/app.db a stazene PDF dokumenty.\n"
-            "Nastaveni AI klice se z bezpecnostnich duvodu neprenasi.\n",
-        )
+    archive_path = exports_dir / f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
+    archive_created = False
+    try:
+        with zipfile.ZipFile(archive_path, "x", zipfile.ZIP_STORED) as zip_file:
+            archive_created = True
+            backup_database_to_zip(zip_file)
+            add_documents_to_zip(zip_file)
+            rules_path = DATABASE_PATH.parent / "manual_download_rules.json"
+            if rules_path.exists():
+                zip_file.write(rules_path, "data/manual_download_rules.json")
+            zip_file.writestr(
+                "README.txt",
+                "ISIR Kontrola – záloha klientských dat\n\n"
+                "Obsah: databáze data/app.db (klienti, řízení, historie, AI výstupy), "
+                "downloaded_documents/ (stažené dokumenty) a případná vlastní pravidla "
+                "data/manual_download_rules.json.\n"
+                "Gemini API klíč ani nastavení přihlášení nejsou součástí zálohy.\n\n"
+                "Obnova po přeinstalaci na stejném PC a pod stejným účtem Windows:\n"
+                "1. Úplně ukončete ISIR-Kontrola.exe (případně ve Správci úloh).\n"
+                "2. Zazálohujte celou složku %LOCALAPPDATA%\\ISIR-Kontrola.\n"
+                "3. Rozbalte ZIP mimo instalační složku.\n"
+                "4. Ze složky data přesuňte původní app.db a případné app.db-wal, "
+                "app.db-shm a app.db-journal do zálohy. Zkopírujte data/app.db "
+                "do %LOCALAPPDATA%\\ISIR-Kontrola\\data.\n"
+                "5. Zkopírujte složku downloaded_documents a případná vlastní pravidla "
+                "do odpovídajících složek aplikace.\n"
+                "6. Spusťte aplikaci a ověřte klienty i otevření dokumentů.\n"
+                "Pokud instalace odstranila nastavení, zadejte znovu Gemini API klíč.\n"
+                "Pro přenos na jiný PC použijte obnovu se změnou cest dokumentů; "
+                "samotné kopírování nemusí zachovat odkazy na soubory.\n",
+            )
+    except Exception:
+        if archive_created:
+            archive_path.unlink(missing_ok=True)
+        raise
     return archive_path
 
 
@@ -1319,7 +1347,7 @@ def index():
     direction = request.args.get("direction") or request.cookies.get("index_direction", "asc")
     if request.args.get("clear_status") == "1":
         selected_statuses = []
-    elif "status" in request.args:
+    elif "status_filter" in request.args or "status" in request.args:
         selected_statuses = [value for value in request.args.getlist("status") if value]
     else:
         selected_statuses = decode_status_cookie(request.cookies.get("index_statuses"))
@@ -1370,15 +1398,11 @@ def index():
                 if normalize_project_value(client.project) in selected_projects
             ]
         if selected_statuses:
-            filtered_clients = [
+            clients = [
                 client
                 for client in clients
                 if clean_status(primary_case(client)) in selected_statuses
             ]
-            if filtered_clients:
-                clients = filtered_clients
-            else:
-                selected_statuses = []
         if selected_in_deadline:
             clients = [client for client in clients if client_is_in_claim_deadline(client)]
         clients = sort_clients(clients, sort_key, direction)
@@ -1427,7 +1451,11 @@ def index():
 
 @app.get("/data/export")
 def export_data():
-    archive_path = create_data_backup()
+    try:
+        archive_path = create_data_backup()
+    except Exception:
+        app.logger.exception("Vytvoření zálohy dat selhalo")
+        return redirect(url_for("index", error="Zálohu se nepodařilo vytvořit. Zkontrolujte volné místo a oprávnění ke složce aplikace. Data nebyla změněna."))
 
     return send_file(
         archive_path,

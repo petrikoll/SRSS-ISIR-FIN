@@ -810,7 +810,8 @@
             <h1 class="visually-hidden">Klienti</h1>
             <img class="header-banner" src="{{ url_for('banner_image') }}" alt="">
         <div class="main-actions">
-            <a class="settings-gear" href="{{ url_for('settings') }}" title="Vložte API klíč" aria-label="Vložte API klíč">⚙</a>
+            <a class="settings-gear" href="{{ url_for('settings') }}" title="Nastavení a záloha dat" aria-label="Nastavení a záloha dat">⚙</a>
+            <a class="button button-light" href="{{ url_for('export_data') }}">Stáhnout zálohu dat (ZIP)</a>
             <span class="gemini-status {% if not gemini_api_ok %}gemini-status-error{% endif %}">
                 {% if gemini_api_ok %}Gemini OK{% else %}Chyba připojení Gemini{% endif %}
             </span>
@@ -1006,12 +1007,11 @@
                     </ul>
                 </div>
             {% endif %}
-            {% if clients %}
-                {% set check_running = check_progress and check_progress.state in ["queued", "running"] %}
-                {% if status_options %}
+                {% if status_options or selected_statuses or selected_projects or selected_in_deadline %}
                     <form class="status-filter" method="get" action="{{ url_for('index') }}">
                         <input type="hidden" name="sort" value="{{ sort_key }}">
                         <input type="hidden" name="direction" value="{{ direction }}">
+                        <input type="hidden" name="status_filter" value="1">
                         <input type="hidden" name="deadline_filter" value="1">
                         {% for project in selected_projects %}
                             <input type="hidden" name="project" value="{{ project }}">
@@ -1033,8 +1033,13 @@
                         {% if selected_statuses or selected_in_deadline %}
                             <a class="button button-light" href="{{ url_for('index', sort=sort_key, direction=direction, project=selected_projects, clear_status=1) }}">Zobrazit vše</a>
                         {% endif %}
+                        {% if selected_projects or selected_statuses or selected_in_deadline %}
+                            <a class="button button-light" href="{{ url_for('index', clear_status=1, clear_project=1) }}">Zrušit všechny filtry</a>
+                        {% endif %}
                     </form>
                 {% endif %}
+            {% if clients %}
+                {% set check_running = check_progress and check_progress.state in ["queued", "running"] %}
                 <div class="client-table-shell">
                     <table>
                         <thead>
@@ -1103,6 +1108,7 @@
                 <div class="panel empty">
                     {% if selected_projects or selected_statuses or selected_in_deadline %}
                         Filtru neodpovídá žádný klient.
+                        <p><a class="button button-light" href="{{ url_for('index', clear_status=1, clear_project=1) }}">Zrušit všechny filtry</a></p>
                     {% else %}
                         Zatím není uložený žádný klient.
                     {% endif %}

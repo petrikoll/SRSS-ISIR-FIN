@@ -1,0 +1,32 @@
+ISIR Kontrola 1.2 – aktualizace existující aplikace
+
+Tento balíček obsahuje nový program ISIR-Kontrola.exe a tento návod.
+Neobsahuje klientská data ani Gemini API klíč.
+
+1. Úplně ukončete ISIR-Kontrola.exe. Zavření okna nemusí ukončit server;
+   zkontrolujte proces ve Správci úloh.
+2. Ve Windows stiskněte Win+R, vložte %LOCALAPPDATA%\ISIR-Kontrola a potvrďte.
+3. Zkopírujte CELÝ obsah této složky do samostatné zálohy mimo instalační složku.
+   Ověřte zejména data\app.db a složku downloaded_documents.
+4. Starý ISIR-Kontrola.exe přesuňte do zálohy a na jeho místo zkopírujte nové EXE.
+   Složky data a downloaded_documents ponechte na místě.
+5. Spusťte aplikaci původním zástupcem a ověřte seznam klientů i dokumenty.
+   V Nastavení a záloha dat je uvedena verze 1.2.
+6. Stiskněte Stáhnout zálohu dat (ZIP) a ZIP uložte mimo instalační složku.
+
+Nepoužívejte při této aktualizaci starý instalátor ani reset_data.cmd.
+Pokud nový program nenaběhne, ukončete ho a vraťte původní EXE ze zálohy.
+
+Novinky:
+- Filtry zůstávají dostupné i při prázdném výsledku.
+- Zrušit všechny filtry obnoví zobrazení bez mazání klientských dat.
+- Odškrtnutí posledního stavu nezachovává starý filtr z cookies.
+- Stáhnout zálohu dat (ZIP) je na hlavní obrazovce i v Nastavení.
+- ZIP obsahuje databázi, historii, AI výstupy, stažené dokumenty a vlastní
+  pravidla stahování, pokud existují. Gemini API klíč v záloze není.
+- Návod k obnově na stejném PC je v README.txt uvnitř stažené zálohy.
+
+Ověření:
+8 regresních testů se syntetickou databází a dokumenty, bez síťových volání.
+Vytvořeno nové Windows x64 EXE. Konkrétní instalace a reálná data na vašem
+PC nebyly při přípravě tohoto balíčku dostupné.
