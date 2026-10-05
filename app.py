@@ -13,6 +13,8 @@ import sys
 import tempfile
 import threading
 import unicodedata
+from uuid import uuid4
+from contextlib import closing, contextmanager
 from urllib.parse import quote, unquote
 from urllib.request import Request, urlopen
 import zipfile
@@ -21,7 +23,7 @@ import calendar
 import re
 from pathlib import Path
 
-from flask import Flask, abort, make_response, redirect, render_template, request, send_file, url_for
+from flask import Flask, abort, g, make_response, redirect, render_template, request, send_file, url_for
 from flask_wtf import CSRFProtect
 from docx import Document
 from docx.shared import Inches, Pt
@@ -35,6 +37,9 @@ from models import InsolvencyCase, InsolvencyDocument
 from scheduler import check_all_clients, start_scheduler
 from storage_paths import DOCUMENTS_DIR
 from structured_data import ensure_structured_data_schema, document_has_extraction, get_case_claims_review_summary
+from runtime_guard import coordinator, DataBusyError, add_background_job
+from data_safety import stage_archive, relative_document_path, validate_database, delete_structured_for_cases, MAX_ARCHIVE_BYTES
+from pdf_io import write_pdf_atomic, MAX_PDF_BYTES
 
 
 def resource_path(relative_path: str) -> str:
@@ -45,10 +50,35 @@ def resource_path(relative_path: str) -> str:
 
 app = Flask(__name__, template_folder=resource_path("templates"))
 app.config["SECRET_KEY"] = get_secret_key()
+app.config["MAX_CONTENT_LENGTH"] = MAX_ARCHIVE_BYTES + 1024 * 1024
 csrf = CSRFProtect(app)
 init_db()
 ensure_structured_data_schema()
-scheduler = start_scheduler()
+scheduler = None
+
+
+@app.before_request
+def enter_data_operation():
+    mutating = request.method not in {"GET", "HEAD", "OPTIONS"} and request.endpoint not in {
+        "cancel_check_progress_route", "dismiss_check_progress_route",
+    }
+    operation = coordinator.operation(mutating=mutating)
+    operation.__enter__()
+    g.data_operation = operation
+
+
+@app.teardown_request
+def leave_data_operation(error=None):
+    operation = g.pop("data_operation", None)
+    if operation is not None:
+        operation.__exit__(None, None, None)
+
+
+@app.errorhandler(DataBusyError)
+def data_busy(error):
+    if request.method == "POST":
+        return redirect(url_for("index", error=str(error)))
+    return make_response(str(error), 503, {"Retry-After": "3"})
 
 
 @app.get("/banner-image")
@@ -84,7 +114,7 @@ PROJECT_IMPORT_ALIASES = {
     "cech 2025-": "CECH 2025-",
 }
 
-check_progress_lock = threading.Lock()
+check_progress_lock = threading.RLock()
 check_progress = {
     "state": "idle",
     "source": "",
@@ -273,6 +303,8 @@ def get_check_progress() -> dict:
 
 def dismiss_check_progress() -> None:
     with check_progress_lock:
+        if check_progress.get("state") in {"queued", "running"}:
+            return
         check_progress["state"] = "idle"
         check_progress["current_client"] = ""
         check_progress["current_step"] = ""
@@ -293,12 +325,37 @@ def check_cancel_requested() -> bool:
 
 
 def run_tracked_check(source: str, client_ids: list[int] | None = None) -> None:
-    reset_check_progress(source)
-    check_all_clients(
-        progress_callback=update_check_progress,
-        client_ids=client_ids,
-        cancel_callback=check_cancel_requested,
-    )
+    # Preserve a cancellation requested while a queued job was waiting for AI.
+    try:
+        check_all_clients(
+            progress_callback=update_check_progress,
+            client_ids=client_ids,
+            cancel_callback=check_cancel_requested,
+        )
+    except Exception:
+        app.logger.exception("Kontrola ISIR se neočekávaně ukončila")
+        with check_progress_lock:
+            check_progress.update(state="finished", current_client="", current_step="", current_detail="Kontrola se nepodařila. Podrobnosti jsou v protokolu aplikace.")
+
+
+def queue_tracked_check(source, client_ids=None):
+    with check_progress_lock:
+        if check_progress.get("state") in {"queued", "running"}:
+            raise DataBusyError("Kontrola ISIR již čeká nebo běží. Počkejte na dokončení.")
+        reset_check_progress(source)
+        try:
+            add_background_job(scheduler, run_tracked_check, args=[source, client_ids], id="tracked_isir_check", replace_existing=False)
+        except Exception:
+            check_progress["state"] = "idle"
+            raise
+
+
+def run_scheduled_check():
+    with check_progress_lock:
+        if check_progress.get("state") in {"queued", "running"}:
+            return
+        reset_check_progress("Automatická kontrola")
+    run_tracked_check("Automatická kontrola")
 
 
 def parse_claim_deadline(value: str | None):
@@ -466,7 +523,6 @@ def run_next_automatic_case_study() -> int:
         for case in cases:
             if case_study_can_be_auto_created(case) and should_auto_create_case_study(case):
                 case.ai_case_study_at = datetime.utcnow()
-                case.ai_case_study = "AI kazuistika se připravuje na pozadí automaticky podle stavu řízení."
                 case_id = case.id
                 break
         session.commit()
@@ -921,10 +977,17 @@ def add_documents_to_zip(zip_file: zipfile.ZipFile) -> None:
 
     for path in documents_dir.rglob("*"):
         if path.is_file():
+            if documents_dir.resolve() not in path.resolve().parents:
+                raise ValueError("Dokument odkazuje mimo datové úložiště aplikace.")
             zip_file.write(path, Path("downloaded_documents") / path.relative_to(documents_dir))
 
 
 def create_data_backup(prefix: str = "isir-data") -> Path:
+    with coordinator.maintenance():
+        return _create_data_backup(prefix)
+
+
+def _create_data_backup(prefix: str = "isir-data") -> Path:
     exports_dir = DATABASE_PATH.parent.parent / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
     archive_path = exports_dir / f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
@@ -944,6 +1007,9 @@ def create_data_backup(prefix: str = "isir-data") -> Path:
                 "downloaded_documents/ (stažené dokumenty) a případná vlastní pravidla "
                 "data/manual_download_rules.json.\n"
                 "Gemini API klíč ani nastavení přihlášení nejsou součástí zálohy.\n\n"
+                "Doporučená obnova v aplikaci 1.3 a novější (i na jiném PC):\n"
+                "Nastavení a záloha dat > Obnovit data ze zálohy. Vyberte tento ZIP "
+                "a potvrďte nahrazení. Původní stav se předem uloží do exports.\n\n"
                 "Obnova po přeinstalaci na stejném PC a pod stejným účtem Windows:\n"
                 "1. Úplně ukončete ISIR-Kontrola.exe (případně ve Správci úloh).\n"
                 "2. Zazálohujte celou složku %LOCALAPPDATA%\\ISIR-Kontrola.\n"
@@ -991,11 +1057,8 @@ def relink_document_paths() -> None:
         for document in session.query(InsolvencyDocument).all():
             if not document.local_path:
                 continue
-            normalized = str(document.local_path).replace("\\", "/")
-            marker = "/downloaded_documents/"
-            if marker in normalized:
-                relative = Path(normalized.split(marker, 1)[1])
-                document.local_path = str(DOCUMENTS_DIR / relative)
+            relative = relative_document_path(document.local_path)
+            document.local_path = str(_safe_restore_path(DOCUMENTS_DIR, relative))
         session.commit()
     except Exception:
         session.rollback()
@@ -1004,65 +1067,156 @@ def relink_document_paths() -> None:
         session.close()
 
 
-def restore_data_from_zip(uploaded_file) -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        archive_path = temp_path / "restore.zip"
-        uploaded_file.save(archive_path)
+def safe_local_document(value):
+    path = Path(value).resolve()
+    if DOCUMENTS_DIR.resolve() not in path.parents:
+        abort(404)
+    return path
 
-        with zipfile.ZipFile(archive_path) as zip_file:
-            names = zip_file.namelist()
-            database_member = next((name for name in names if name.replace("\\", "/") == "data/app.db"), None)
-            if database_member is None:
-                raise ValueError("Archiv neobsahuje databazi data/app.db.")
 
-            restored_db = temp_path / "app.db"
-            with zip_file.open(database_member) as source, restored_db.open("wb") as target:
-                shutil.copyfileobj(source, target)
+@contextmanager
+def retained_files_for_delete(documents):
+    """Back up first, move files aside and return them if the SQL commit fails."""
+    create_data_backup("pred-smazanim")
+    base = DATABASE_PATH.parent.parent.resolve()
+    retained = Path(tempfile.mkdtemp(prefix="delete-recovery-", dir=base))
+    moved = []
+    selected_ids = {document.id for document in documents}
+    session = SessionLocal()
+    try:
+        others = {
+            str(Path(d.local_path).resolve()).casefold()
+            for d in session.query(InsolvencyDocument).all()
+            if d.id not in selected_ids and d.local_path
+        }
+    finally:
+        session.close()
+    try:
+        paths = {safe_local_document(d.local_path) for d in documents if d.local_path}
+        for path in paths:
+            if path.is_file() and str(path).casefold() not in others:
+                destination = retained / str(len(moved))
+                path.replace(destination)
+                moved.append((path, destination))
+        yield
+    except BaseException:
+        for path, destination in moved:
+            destination.replace(path)
+        raise
+    finally:
+        # Never remove retained originals if restoring a file failed.
+        if retained.resolve().parent == base and not any(destination.exists() for _, destination in moved):
+            shutil.rmtree(retained)
+    # SQL committed successfully; the original content remains in the ZIP.
+    if retained.exists() and retained.resolve().parent == base:
+        shutil.rmtree(retained)
 
-            restored_documents = temp_path / "downloaded_documents"
-            restored_documents.mkdir(parents=True, exist_ok=True)
-            for member in names:
-                relative_path = _restore_member_relative_path(member)
-                if relative_path is None:
-                    continue
-                target_path = _safe_restore_path(restored_documents, relative_path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with zip_file.open(member) as source, target_path.open("wb") as target:
-                    shutil.copyfileobj(source, target)
 
-        create_data_backup("pred-obnovou")
+def recover_interrupted_ai():
+    session = SessionLocal()
+    try:
+        for case in session.query(InsolvencyCase).all():
+            legacy = False
+            if case.ai_summary and case.ai_summary.startswith(("AI shrnutí se připravuje", "AI shrnutí vybraných dokumentů se připravuje", "AI ověření údajů z PDF se připravuje")):
+                case.ai_summary = None
+                legacy = True
+            if case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje"):
+                case.ai_case_study = None
+                legacy = True
+            if case.ai_pending_kind or legacy or case.ai_category in {"Analýza běží", "AI kontrola údajů běží"}:
+                case.ai_pending_kind = None
+                case.ai_last_error = "Předchozí AI úlohu přerušilo ukončení aplikace. Můžete ji spustit znovu."
+                if case.ai_category in {"Analýza běží", "AI kontrola údajů běží"}:
+                    case.ai_category = None
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def restore_data_from_zip(uploaded_file):
+    base = DATABASE_PATH.parent.parent
+    with coordinator.maintenance(), tempfile.TemporaryDirectory(prefix="restore-stage-", dir=base) as temp_dir:
+        database, documents, rules, counts = stage_archive(uploaded_file, Path(temp_dir))
+        backup = replace_data_set(database, documents, rules, "pred-obnovou")
+        return backup, counts
+
+
+def replace_data_set(database, documents, rules=None, backup_prefix="pred-obnovou"):
+    with coordinator.maintenance():
+        return _replace_data_set(database, documents, rules, backup_prefix)
+
+
+def _replace_data_set(database, documents, rules=None, backup_prefix="pred-obnovou"):
+    """Move the old data aside and roll it back if any replacement step fails."""
+    base = DATABASE_PATH.parent.parent.resolve()
+    targets = [DATABASE_PATH] + [Path(str(DATABASE_PATH) + suffix) for suffix in ("-wal", "-shm", "-journal")]
+    targets += [DOCUMENTS_DIR]
+    if rules is not None:
+        targets.append(DATABASE_PATH.parent / "manual_download_rules.json")
+    for target in targets:
+        if base not in target.resolve().parents:
+            raise ValueError("Datové úložiště je mimo instalační složku.")
+    backup = create_data_backup(backup_prefix)
+    recovery = Path(tempfile.mkdtemp(prefix="data-recovery-", dir=base))
+    moved = []
+    installed = []
+    engine.dispose()
+    try:
+        for target in targets:
+            if target.exists():
+                target.replace(recovery / target.name)
+                moved.append(target)
+        database.replace(DATABASE_PATH)
+        installed.append(DATABASE_PATH)
+        documents.replace(DOCUMENTS_DIR)
+        installed.append(DOCUMENTS_DIR)
+        if rules is not None:
+            rules.replace(DATABASE_PATH.parent / "manual_download_rules.json")
+            installed.append(DATABASE_PATH.parent / "manual_download_rules.json")
+        init_db(recovery_in_progress=True)
+        ensure_structured_data_schema()
+        relink_document_paths()
+        recover_interrupted_ai()
+        validate_database(DATABASE_PATH)
+    except Exception as exc:
         engine.dispose()
-        DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(restored_db, DATABASE_PATH)
-
-        if DOCUMENTS_DIR.exists():
-            shutil.rmtree(DOCUMENTS_DIR)
-        if restored_documents.exists():
-            shutil.copytree(restored_documents, DOCUMENTS_DIR)
-        else:
-            DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    init_db()
-    relink_document_paths()
+        try:
+            for target in targets:
+                candidate_sidecar = DATABASE_PATH in installed and target.name.startswith("app.db-")
+                if target.exists() and (target in installed or target in moved or candidate_sidecar):
+                    target.replace(recovery / ("failed-" + target.name))
+            for target in moved:
+                (recovery / target.name).replace(target)
+        except Exception as rollback_error:
+            raise RuntimeError(f"Obnova selhala. Původní data jsou v {recovery} a záloha v {backup}. Ukončete aplikaci a obnovte původní stav.") from rollback_error
+        raise ValueError(f"Změna dat selhala; původní data byla vrácena. Záloha: {backup.name}") from exc
+    # Successful replacement is verified; the ZIP still retains the original data.
+    if recovery.resolve().parent != base:
+        raise RuntimeError("Neplatné umístění pracovního adresáře.")
+    try:
+        shutil.rmtree(recovery)
+    except OSError:
+        app.logger.warning("Pracovní kopie dat zůstala ve složce %s", recovery)
+    return backup
 
 
 def clear_all_client_data() -> None:
-    session = SessionLocal()
-    try:
-        for client in session.query(Client).all():
-            session.delete(client)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-    documents_dir = DOCUMENTS_DIR
-    if documents_dir.exists():
-        shutil.rmtree(documents_dir)
-    documents_dir.mkdir(parents=True, exist_ok=True)
+    base = DATABASE_PATH.parent.parent
+    with coordinator.maintenance(), tempfile.TemporaryDirectory(prefix="clear-stage-", dir=base) as temp_dir:
+        candidate = Path(temp_dir) / "app.db"
+        with closing(sqlite3.connect(DATABASE_PATH)) as source, closing(sqlite3.connect(candidate)) as target:
+            source.backup(target)
+            tables = [row[0] for row in target.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+            with target:
+                for table in tables:
+                    identifier = table.replace('"', '""')
+                    target.execute(f'DELETE FROM "{identifier}"')
+        documents = Path(temp_dir) / "downloaded_documents"
+        documents.mkdir()
+        return replace_data_set(candidate, documents, backup_prefix="pred-smazanim")
 
 
 MANUAL_DOWNLOAD_RULES_PATH = DATABASE_PATH.parent / "manual_download_rules.json"
@@ -1089,10 +1243,17 @@ def load_manual_download_rules() -> list[dict]:
 
 def save_manual_download_rules(rules: list[dict]) -> None:
     MANUAL_DOWNLOAD_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MANUAL_DOWNLOAD_RULES_PATH.write_text(
-        json.dumps(rules, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=MANUAL_DOWNLOAD_RULES_PATH.parent, delete=False) as stream:
+            temporary = stream.name
+            json.dump(rules, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, MANUAL_DOWNLOAD_RULES_PATH)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def add_manual_download_rule_from_document(document: InsolvencyDocument) -> bool:
@@ -1279,21 +1440,6 @@ def build_case_study_docx(case: InsolvencyCase) -> BytesIO:
     return output
 
 
-def delete_client_files(client: Client) -> None:
-    folder_name = safe_folder_name(
-        f"{client.last_name}_{client.first_name}_{client.birth_date.isoformat() if client.birth_date else 'bez_data'}"
-    )
-    client_path = DOCUMENTS_DIR / folder_name
-    if client_path.exists():
-        shutil.rmtree(client_path)
-
-    case_ids = [case.id for case in client.cases if case.id is not None]
-    for case_id in case_ids:
-        path = DOCUMENTS_DIR / str(case_id)
-        if path.exists():
-            shutil.rmtree(path)
-
-
 app.jinja_env.globals.update(
     primary_case=primary_case,
     clean_status=clean_status,
@@ -1453,6 +1599,8 @@ def index():
 def export_data():
     try:
         archive_path = create_data_backup()
+    except DataBusyError:
+        raise
     except Exception:
         app.logger.exception("Vytvoření zálohy dat selhalo")
         return redirect(url_for("index", error="Zálohu se nepodařilo vytvořit. Zkontrolujte volné místo a oprávnění ke složce aplikace. Data nebyla změněna."))
@@ -1467,16 +1615,20 @@ def export_data():
 
 @app.post("/data/import")
 def import_data():
+    if request.form.get("confirm_restore") != "yes":
+        return redirect(url_for("index", error="Obnovu potvrďte v Nastavení a záloha dat. Aktuální data nebyla změněna."))
     uploaded_file = request.files.get("backup_file")
     if uploaded_file is None or not uploaded_file.filename.lower().endswith(".zip"):
         return redirect(url_for("index", error="Nahrajte ZIP zálohu ze Stažení dat."))
 
     try:
-        restore_data_from_zip(uploaded_file)
+        backup, counts = restore_data_from_zip(uploaded_file)
+    except DataBusyError:
+        raise
     except Exception as exc:
         return redirect(url_for("index", error=f"Obnova dat se nepodařila: {exc}"))
 
-    return redirect(url_for("index", message="Data byla obnovena ze zálohy."))
+    return redirect(url_for("index", clear_status=1, clear_project=1, message=f"Data byla obnovena: {counts['clients']} klientů. Původní stav je v záloze {backup.name} ve složce exports."))
 
 
 @app.post("/check-progress/dismiss")
@@ -1493,8 +1645,14 @@ def cancel_check_progress_route():
 
 @app.post("/data/clear")
 def clear_data():
-    clear_all_client_data()
-    return redirect(url_for("index", message="Všechna klientská data byla vymazána."))
+    try:
+        backup = clear_all_client_data()
+    except DataBusyError:
+        raise
+    except Exception:
+        app.logger.exception("Vymazání klientských dat selhalo")
+        return redirect(url_for("index", error="Vymazání dat se nepodařilo. Ověřte původní stav; zálohy jsou ve složce exports."))
+    return redirect(url_for("index", message=f"Klientská data byla vymazána. Původní stav je v záloze {backup.name} ve složce exports."))
 
 
 @app.get("/settings")
@@ -1634,12 +1792,7 @@ def import_clients():
         session.close()
 
     if imported:
-        scheduler.add_job(
-            run_tracked_check,
-            args=["Import klientů", imported_client_ids],
-            id=f"import_isir_check_{int(datetime.utcnow().timestamp())}",
-            replace_existing=False,
-        )
+        queue_tracked_check("Import klientů", imported_client_ids)
 
     message = f"Importováno {imported} klientů. Duplicit přeskočeno {skipped}. Neplatných řádků {invalid}."
     if imported:
@@ -1649,16 +1802,22 @@ def import_clients():
 
 @app.post("/clients/<int:client_id>/delete")
 def delete_client(client_id: int):
-    session = SessionLocal()
-    try:
-        client = session.get(Client, client_id)
-        if client is not None:
-            delete_client_files(client)
-            session.delete(client)
-            session.commit()
-    finally:
-        session.close()
-
+    with coordinator.maintenance():
+        session = SessionLocal()
+        try:
+            client = session.get(Client, client_id)
+            if client is not None:
+                documents = [d for case in client.cases for d in case.documents]
+                case_ids = [case.id for case in client.cases]
+                with retained_files_for_delete(documents):
+                    delete_structured_for_cases(session.connection(), case_ids)
+                    session.delete(client)
+                    session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
     return redirect(url_for("index"))
 
 
@@ -1692,9 +1851,6 @@ def update_client(client_id: int):
         if duplicate is not None:
             return redirect(url_for("client_detail", client_id=client_id))
 
-        old_folder = safe_folder_name(
-            f"{client.last_name}_{client.first_name}_{client.birth_date.isoformat() if client.birth_date else 'bez_data'}"
-        )
         client.first_name = first_name
         client.last_name = last_name
         client.birth_date = birth_date
@@ -1716,15 +1872,6 @@ def update_client(client_id: int):
 
         client.last_checked_at = parse_optional_datetime(request.form.get("last_checked_at", ""))
 
-        new_folder = safe_folder_name(f"{client.last_name}_{client.first_name}_{client.birth_date.isoformat()}")
-        old_path = DOCUMENTS_DIR / old_folder
-        new_path = DOCUMENTS_DIR / new_folder
-        if old_path.exists() and old_path != new_path and not new_path.exists():
-            old_path.rename(new_path)
-            for case in client.cases:
-                for document in case.documents:
-                    if document.local_path:
-                        document.local_path = str(Path(str(document.local_path).replace(str(old_path), str(new_path))))
         session.commit()
     except ValueError:
         session.rollback()
@@ -1743,7 +1890,7 @@ def client_detail(client_id: int):
         client = session.get(Client, client_id)
         if client is None:
             return redirect(url_for("index"))
-        if recently_changed(client):
+        if recently_changed(client) and not coordinator.pending_tasks:
             client.change_seen_at = datetime.utcnow()
             session.commit()
         return render_template(
@@ -1782,10 +1929,10 @@ def _download_document_for_manual_include(document: InsolvencyDocument) -> None:
     filename = safe_download_name(f"{url_hash}_{document.title or document.document_type or 'dokument'}.pdf")
     target_path = target_dir / filename
 
-    request = Request(document.source_url, headers={"User-Agent": "ISIR-Kontrola/1.0"})
-    with urlopen(request, timeout=30) as response:
-        content = response.read()
-    target_path.write_bytes(content)
+    download_request = Request(document.source_url, headers={"User-Agent": "ISIR-Kontrola/1.3"})
+    with urlopen(download_request, timeout=30) as response:
+        content = response.read(MAX_PDF_BYTES + 1)
+    write_pdf_atomic(target_path, content)
 
     document.local_path = str(target_path)
     document.file_size = len(content)
@@ -1801,6 +1948,7 @@ def _process_manual_included_document_job(document_id: int) -> None:
         if document is None or document.case is None:
             return
         case = document.case
+        case_id = case.id
         try:
             if (
                 document.local_path
@@ -1814,9 +1962,12 @@ def _process_manual_included_document_job(document_id: int) -> None:
                 )
                 persist_structured_report_payload_for_case(case, [document], payload)
             analyze_case_study(case)
+            case.ai_last_error = None
         except Exception as exc:
-            case.ai_case_study_at = datetime.utcnow()
-            case.ai_case_study = f"Kazuistiku se po ručním zahrnutí dokumentu nepodařilo vytvořit: {exc}"
+            session.rollback()
+            case = session.get(InsolvencyCase, case_id)
+            case.ai_last_error = f"AI úloha selhala ({exc.__class__.__name__}). Předchozí výstup zůstal zachován."
+        case.ai_pending_kind = None
         session.commit()
     finally:
         session.close()
@@ -1837,28 +1988,25 @@ def include_document_in_case_study(document_id: int):
             return redirect(next_url)
 
         _download_document_for_manual_include(document)
+        document.deleted_at = None
         document.document_type = document.document_type or "hlavní dokument"
 
         if create_rule:
             add_manual_download_rule_from_document(document)
 
-        case.ai_case_study_at = datetime.utcnow()
-        case.ai_case_study = "AI kazuistika se připravuje na pozadí po ručním zahrnutí dokumentu. Stránka se obnoví sama, případně můžete obnovit ručně (F5)."
+        case.ai_pending_kind = "study"
+        case.ai_last_error = None
         case_id = case.id
-        session.commit()
+        queue_case_ai(session, case, _process_manual_included_document_job,
+            args=[document_id], id=f"ai_case_study_manual_document_{case_id}_{document_id}_{uuid4().hex}", replace_existing=False)
+    except DataBusyError:
+        raise
     except Exception:
         session.rollback()
         return redirect(next_url)
     finally:
         session.close()
 
-    if case_id is not None:
-        scheduler.add_job(
-            _process_manual_included_document_job,
-            args=[document_id],
-            id=f"ai_case_study_manual_document_{case_id}_{document_id}_{int(datetime.utcnow().timestamp())}",
-            replace_existing=False,
-        )
     return redirect(next_url)
 
 
@@ -1869,8 +2017,8 @@ def open_document(document_id: int):
         document = session.get(InsolvencyDocument, document_id)
         if document is None or not document.local_path:
             abort(404)
-        path = Path(document.local_path)
-        if not path.exists():
+        path = safe_local_document(document.local_path)
+        if not path.is_file():
             abort(404)
         return send_file(path, mimetype="application/pdf", download_name=path.name)
     finally:
@@ -1884,8 +2032,8 @@ def download_document(document_id: int):
         document = session.get(InsolvencyDocument, document_id)
         if document is None or not document.local_path:
             abort(404)
-        path = Path(document.local_path)
-        if not path.exists():
+        path = safe_local_document(document.local_path)
+        if not path.is_file():
             abort(404)
         return send_file(path, mimetype="application/pdf", as_attachment=True, download_name=path.name)
     finally:
@@ -1895,28 +2043,24 @@ def download_document(document_id: int):
 @app.post("/documents/<int:document_id>/delete")
 def delete_document(document_id: int):
     next_url = request.form.get("next") or url_for("index")
-    session = SessionLocal()
-    try:
-        document = session.get(InsolvencyDocument, document_id)
-        if document is not None:
-            path = Path(document.local_path) if document.local_path else None
-            if path and path.exists():
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-            case = document.case
-            document.local_path = None
-            document.file_size = None
-            if case is not None and case.document_count:
-                case.document_count = sum(
-                    1
-                    for item in case.documents
-                    if item.local_path and Path(item.local_path).exists()
-                )
-            session.commit()
-    finally:
-        session.close()
+    with coordinator.maintenance():
+        session = SessionLocal()
+        try:
+            document = session.get(InsolvencyDocument, document_id)
+            if document is not None:
+                with retained_files_for_delete([document]):
+                    document.local_path = None
+                    document.file_size = None
+                    document.deleted_at = datetime.utcnow()
+                    case = document.case
+                    if case is not None:
+                        case.document_count = sum(1 for item in case.documents if item.local_path)
+                    session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
     return redirect(next_url)
 
 
@@ -1950,12 +2094,7 @@ def check_now():
     if request.method == "GET":
         return redirect(url_for("index"))
 
-    scheduler.add_job(
-        run_tracked_check,
-        args=["Ruční kontrola"],
-        id=f"manual_isir_check_{int(datetime.utcnow().timestamp())}",
-        replace_existing=False,
-    )
+    queue_tracked_check("Ruční kontrola")
     return redirect(url_for("index"))
 
 
@@ -1980,12 +2119,7 @@ def check_selected_projects():
         return redirect(url_for("index", project_filter=1, project=selected_projects, error="Ve vybraných projektech není žádný klient."))
 
     project_label = ", ".join(selected_projects)
-    scheduler.add_job(
-        run_tracked_check,
-        args=[f"Kontrola projektů: {project_label}", client_ids],
-        id=f"project_isir_check_{int(datetime.utcnow().timestamp())}",
-        replace_existing=False,
-    )
+    queue_tracked_check(f"Kontrola projektů: {project_label}", client_ids)
     return redirect(
         url_for(
             "index",
@@ -1994,6 +2128,20 @@ def check_selected_projects():
             message=f"Kontrola ISIR pro vybrané projekty běží na pozadí ({len(client_ids)} klientů).",
         )
     )
+
+
+def queue_case_ai(session, case, function, **kwargs):
+    session.commit()
+    try:
+        return add_background_job(scheduler, function, **kwargs)
+    except Exception as exc:
+        session.rollback()
+        current = session.get(InsolvencyCase, case.id)
+        if current is not None:
+            current.ai_pending_kind = None
+            current.ai_last_error = "AI úlohu se nepodařilo zařadit. Zkuste ji spustit znovu."
+            session.commit()
+        raise DataBusyError("AI úlohu se nepodařilo zařadit. Předchozí výstup zůstal zachován.") from exc
 
 
 @app.post("/cases/<int:case_id>/analyze")
@@ -2009,22 +2157,18 @@ def analyze_case(case_id: int):
     try:
         case = session.get(InsolvencyCase, case_id)
         if case is not None:
-            case.ai_checked_at = datetime.utcnow()
-            case.ai_category = "Analýza běží"
+            case.ai_pending_kind = "summary"
+            case.ai_last_error = None
             if selected_document_ids:
-                case.ai_summary = "AI shrnutí vybraných dokumentů se připravuje na pozadí. Stránka se obnoví sama, případně můžete obnovit ručně (F5)."
                 job_func = analyze_case_documents_job
                 job_args = [case_id, selected_document_ids]
             else:
-                case.ai_summary = "AI shrnutí se připravuje na pozadí. Stránka se obnoví sama, případně můžete obnovit ručně (F5)."
                 job_func = analyze_case_latest_document_job
                 job_args = [case_id]
 
-            session.commit()
-            scheduler.add_job(
-                job_func,
+            queue_case_ai(session, case, job_func,
                 args=job_args,
-                id=f"ai_analysis_{case_id}_{int(datetime.utcnow().timestamp())}",
+                id=f"ai_analysis_{case_id}_{uuid4().hex}",
                 replace_existing=False,
             )
     finally:
@@ -2041,13 +2185,11 @@ def create_case_study(case_id: int):
     try:
         case = session.get(InsolvencyCase, case_id)
         if case is not None:
-            case.ai_case_study_at = datetime.utcnow()
-            case.ai_case_study = "AI kazuistika se připravuje na pozadí. Stránka se obnoví sama, případně můžete obnovit ručně (F5)."
-            session.commit()
-            scheduler.add_job(
-                analyze_case_study_job,
+            case.ai_pending_kind = "study"
+            case.ai_last_error = None
+            queue_case_ai(session, case, analyze_case_study_job,
                 args=[case_id],
-                id=f"ai_case_study_{case_id}_{int(datetime.utcnow().timestamp())}",
+                id=f"ai_case_study_{case_id}_{uuid4().hex}",
                 replace_existing=False,
             )
     finally:
@@ -2063,14 +2205,11 @@ def verify_case_data(case_id: int):
     try:
         case = session.get(InsolvencyCase, case_id)
         if case is not None:
-            case.ai_checked_at = datetime.utcnow()
-            case.ai_category = "AI kontrola údajů běží"
-            case.ai_summary = "AI ověření údajů z PDF se připravuje na pozadí. Stránka se obnoví sama, případně můžete obnovit ručně (F5)."
-            session.commit()
-            scheduler.add_job(
-                analyze_case_data_verification_job,
+            case.ai_pending_kind = "verify"
+            case.ai_last_error = None
+            queue_case_ai(session, case, analyze_case_data_verification_job,
                 args=[case_id],
-                id=f"ai_data_verification_{case_id}_{int(datetime.utcnow().timestamp())}",
+                id=f"ai_data_verification_{case_id}_{uuid4().hex}",
                 replace_existing=False,
             )
     finally:
@@ -2096,6 +2235,10 @@ def apply_verified_case_data(case_id: int):
         session.close()
 
     return redirect(next_url)
+
+
+recover_interrupted_ai()
+scheduler = start_scheduler(check_job=run_scheduled_check)
 
 
 if __name__ == "__main__":

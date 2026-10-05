@@ -7,6 +7,7 @@ import re
 import sqlite3
 import time
 from typing import Any
+from contextlib import contextmanager
 
 from models import DATABASE_PATH, InsolvencyCase, InsolvencyDocument
 
@@ -15,7 +16,8 @@ def _now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect():
     # SQLite při delších úlohách AI často naráží na souběžné zápisy.
     # Timeout + busy_timeout dají databázi čas počkat místo okamžité chyby „database is locked“.
     conn = sqlite3.connect(str(DATABASE_PATH), timeout=60)
@@ -26,7 +28,11 @@ def _connect() -> sqlite3.Connection:
     except sqlite3.OperationalError:
         # WAL může selhat u některých síťových/uzamčených souborů; aplikace musí pokračovat i bez něj.
         pass
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 

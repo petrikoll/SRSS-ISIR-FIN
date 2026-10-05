@@ -107,6 +107,14 @@
         <h2>Záloha dat</h2>
         <p class="muted">Stáhněte ZIP s klienty, historií řízení, AI výstupy a staženými dokumenty. Zálohu uložte mimo instalační složku aplikace, například na externí disk. Gemini API klíč do zálohy nepatří.</p>
         <a class="button" href="{{ url_for('export_data') }}">Stáhnout zálohu dat (ZIP)</a>
+        <h2>Obnovit data ze zálohy</h2>
+        <p class="muted">Vyberte ZIP vytvořený aplikací. Obnova nahradí současné klienty a dokumenty; předem se automaticky uloží záloha současných dat do složky exports. API klíč zůstane zachován. Obnovu lze použít i při přenosu na jiný PC. Počkejte na dokončení běžících kontrol a AI úloh.</p>
+        <form method="post" action="{{ url_for('import_data') }}" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Záloha dat (ZIP)<input type="file" name="backup_file" accept=".zip" required></label>
+            <label style="display:flex;align-items:center"><input style="width:auto" type="checkbox" name="confirm_restore" value="yes" required>Chci nahradit současná data vybranou zálohou.</label>
+            <button type="submit">Obnovit data</button>
+        </form>
         <details>
             <summary>Jak obnovit data po přeinstalaci</summary>
             <p class="muted">Postup platí pro stejný PC a stejný účet Windows. Podrobný návod je také v souboru README.txt uvnitř zálohy.</p>
@@ -118,7 +126,7 @@
                 <li>Spusťte aplikaci a ověřte seznam klientů i otevření dokumentů. Při ztrátě nastavení zadejte znovu Gemini API klíč.</li>
             </ol>
         </details>
-        <p class="muted">ISIR Kontrola – oprava filtrů a zálohování, verze 1.2.</p>
+        <p class="muted">ISIR Kontrola – verze 1.3.</p>
     </section>
 </main>
 </body>

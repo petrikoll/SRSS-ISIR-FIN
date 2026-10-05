@@ -19,6 +19,7 @@ from app_settings import get_gemini_api_key
 from google import genai
 from google.genai import types
 from requests import Session
+from pdf_io import download_pdf_content
 
 from models import InsolvencyCase, InsolvencyDocument, SessionLocal
 from structured_data import persist_structured_extraction, get_case_structured_snapshot, get_document_extraction_payloads
@@ -663,14 +664,13 @@ Pravidla:
 
 
 def _download_pdf(url: str) -> str:
-    session = Session()
-    session.trust_env = False
-    response = session.get(url, timeout=30)
-    response.raise_for_status()
+    with Session() as session:
+        session.trust_env = False
+        content = download_pdf_content(session, url)
 
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
-        handle.write(response.content)
+        handle.write(content)
         return handle.name
     finally:
         handle.close()
@@ -904,7 +904,10 @@ def _generate_json_with_retry(client: genai.Client, contents: list[Any], *, max_
                 contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json"),
             )
-            return json.loads(_strip_code_fence(response.text))
+            payload = json.loads(_strip_code_fence(response.text))
+            if not isinstance(payload, dict):
+                raise ValueError("AI odpověď musí být objekt JSON.")
+            return payload
         except Exception as exc:
             last_error = exc
             time.sleep(1)
@@ -1058,6 +1061,7 @@ def extract_structured_report_from_pdf_ai(
                 os.unlink(temp_path)
             except OSError:
                 pass
+        _close_gemini_client(client)
 
 
 def persist_structured_report_payload_for_case(
@@ -1154,17 +1158,17 @@ def _upload_with_retry(client: genai.Client, path: str | Path):
 
 @contextmanager
 def _without_proxy_env():
-    saved = {key: os.environ.get(key) for key in PROXY_ENV_KEYS}
-    try:
-        for key in PROXY_ENV_KEYS:
-            os.environ.pop(key, None)
-        yield
-    finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    # The HTTP client already has trust_env=False; do not change process-wide
+    # environment variables while other requests may be running.
+    yield
+
+
+def _close_gemini_client(client):
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 def _make_gemini_client(api_key: str) -> genai.Client:
@@ -1277,6 +1281,7 @@ def extract_claim_amount_from_pdf_ai(
     temp_path = None
     client = None
 
+    client = None
     try:
         with _without_proxy_env():
             client = _make_gemini_client(api_key)
@@ -1321,6 +1326,7 @@ def extract_claim_amount_from_pdf_ai(
                 os.unlink(temp_path)
             except OSError:
                 pass
+        _close_gemini_client(client)
 
 
 
@@ -1348,8 +1354,7 @@ def analyze_case_documents(
             document for document in documents
             if getattr(document, "id", None) and int(document.id) not in cached_payloads
         ]
-        with _without_proxy_env():
-            client = _make_gemini_client(api_key)
+        with _without_proxy_env(), _make_gemini_client(api_key) as client:
             if cached_payloads:
                 analysis_payload = _combine_cached_structured_payloads(documents, cached_payloads)
                 if missing_documents:
@@ -1425,6 +1430,7 @@ def analyze_case_documents(
     temp_paths = []
     client = None
 
+    client = None
     try:
         with _without_proxy_env():
             client = _make_gemini_client(api_key)
@@ -1526,6 +1532,7 @@ def analyze_case_documents(
                 os.unlink(temp_path)
             except OSError:
                 pass
+        _close_gemini_client(client)
 
 
 def analyze_case_latest_document(case, api_key=None):
@@ -1544,6 +1551,7 @@ def analyze_case_latest_document(case, api_key=None):
     uploaded_file = None
     client = None
 
+    client = None
     try:
         with _without_proxy_env():
             client = _make_gemini_client(api_key)
@@ -1595,6 +1603,7 @@ def analyze_case_latest_document(case, api_key=None):
             os.unlink(pdf_path)
         except OSError:
             pass
+        _close_gemini_client(client)
 
 
 def _format_case_study(payload, claim_collection_running=False):
@@ -1949,6 +1958,7 @@ def analyze_case_study(case: InsolvencyCase, api_key: str | None = None) -> None
     temp_paths = []
     client = None
 
+    client = None
     try:
         with _without_proxy_env():
             client = _make_gemini_client(api_key)
@@ -2051,6 +2061,7 @@ def analyze_case_study(case: InsolvencyCase, api_key: str | None = None) -> None
                 os.unlink(temp_path)
             except OSError:
                 pass
+        _close_gemini_client(client)
 
 
 def _format_stored_datetime(value) -> str:
@@ -2152,6 +2163,7 @@ def analyze_case_data_verification(case: InsolvencyCase, api_key: str | None = N
     stored_values = _case_data_snapshot(case)
     uploaded_files = []
     temp_paths = []
+    client = None
     try:
         with _without_proxy_env():
             client = _make_gemini_client(api_key)
@@ -2218,75 +2230,45 @@ def analyze_case_data_verification(case: InsolvencyCase, api_key: str | None = N
                 os.unlink(temp_path)
             except OSError:
                 pass
+        _close_gemini_client(client)
+
+
+def _run_ai_job(case_id, analyze, *, case_study=False):
+    session = SessionLocal()
+    try:
+        case = session.get(InsolvencyCase, case_id)
+        if case is None:
+            return
+        try:
+            analyze(case)
+            case.ai_last_error = None
+            case.ai_pending_kind = None
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            case = session.get(InsolvencyCase, case_id)
+            if case is not None:
+                case.ai_last_error = f"AI úloha selhala ({exc.__class__.__name__}). Poslední uložený výstup zůstal zachován."
+                case.ai_pending_kind = None
+                session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def analyze_case_latest_document_job(case_id: int) -> None:
-    session = SessionLocal()
-    try:
-        case = session.get(InsolvencyCase, case_id)
-        if case is None:
-            return
-
-        try:
-            analyze_case_latest_document(case)
-        except Exception as exc:
-            case.ai_checked_at = datetime.utcnow()
-            case.ai_category = "Analýza selhala"
-            case.ai_summary = str(exc)
-        session.commit()
-    finally:
-        session.close()
-
+    _run_ai_job(case_id, analyze_case_latest_document)
 
 
 def analyze_case_documents_job(case_id: int, document_ids: list[int] | None = None) -> None:
-    session = SessionLocal()
-    try:
-        case = session.get(InsolvencyCase, case_id)
-        if case is None:
-            return
-
-        try:
-            analyze_case_documents(case, document_ids=document_ids)
-        except Exception as exc:
-            case.ai_checked_at = datetime.utcnow()
-            case.ai_category = "Analýza selhala"
-            case.ai_summary = str(exc)
-        session.commit()
-    finally:
-        session.close()
+    _run_ai_job(case_id, lambda case: analyze_case_documents(case, document_ids=document_ids))
 
 
 def analyze_case_study_job(case_id: int) -> None:
-    session = SessionLocal()
-    try:
-        case = session.get(InsolvencyCase, case_id)
-        if case is None:
-            return
-
-        try:
-            analyze_case_study(case)
-        except Exception as exc:
-            case.ai_case_study_at = datetime.utcnow()
-            case.ai_case_study = f"Kazuistiku se nepodařilo vytvořit: {exc}"
-        session.commit()
-    finally:
-        session.close()
+    _run_ai_job(case_id, analyze_case_study, case_study=True)
 
 
 def analyze_case_data_verification_job(case_id: int) -> None:
-    session = SessionLocal()
-    try:
-        case = session.get(InsolvencyCase, case_id)
-        if case is None:
-            return
-
-        try:
-            analyze_case_data_verification(case)
-        except Exception as exc:
-            case.ai_checked_at = datetime.utcnow()
-            case.ai_category = "AI kontrola údajů selhala"
-            case.ai_summary = str(exc)
-        session.commit()
-    finally:
-        session.close()
+    _run_ai_job(case_id, analyze_case_data_verification)

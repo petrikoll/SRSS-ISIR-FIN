@@ -33,6 +33,7 @@ class Client(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     last_checked_at = Column(DateTime)
+    last_check_error = Column(Text)
     insolvency_status = Column(String(255), default="Nezkontrolováno", nullable=False)
     last_found_change = Column(Text)
     last_result_hash = Column(String(64))
@@ -76,6 +77,8 @@ class InsolvencyCase(Base):
     claims_total_amount = Column(Text)
     claims_count = Column(Integer)
     ai_checked_at = Column(DateTime)
+    ai_last_error = Column(Text)
+    ai_pending_kind = Column(String(30))
     ai_model = Column(String(100))
     ai_category = Column(String(255))
     ai_summary = Column(Text)
@@ -125,20 +128,22 @@ class InsolvencyChange(Base):
     client = relationship("Client", back_populates="changes")
 
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 60})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def init_db() -> None:
+def init_db(recovery_in_progress=False) -> None:
+    if not recovery_in_progress:
+        interrupted = [p for p in DATABASE_PATH.parent.parent.glob("data-recovery-*") if (p / "app.db").is_file()]
+        if interrupted:
+            raise RuntimeError(f"Předchozí obnovu přerušilo ukončení aplikace. Původní databáze zůstala v {interrupted[0]}. Obnovte data ze zálohy v exports při vypnuté aplikaci; prázdná databáze nebyla vytvořena.")
     Base.metadata.create_all(engine)
     migrate_db()
 
 
 def migrate_db() -> None:
-    columns = {
-        row[1]
-        for row in engine.connect().execute(text("PRAGMA table_info(insolvency_cases)")).fetchall()
-    }
+    with engine.connect() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(insolvency_cases)"))}
 
     migrations = []
     if "proceeding_started_at" not in columns:
@@ -155,6 +160,10 @@ def migrate_db() -> None:
         migrations.append("ALTER TABLE insolvency_cases ADD COLUMN ai_checked_at DATETIME")
     if "ai_model" not in columns:
         migrations.append("ALTER TABLE insolvency_cases ADD COLUMN ai_model VARCHAR(100)")
+    if "ai_pending_kind" not in columns:
+        migrations.append("ALTER TABLE insolvency_cases ADD COLUMN ai_pending_kind VARCHAR(30)")
+    if "ai_last_error" not in columns:
+        migrations.append("ALTER TABLE insolvency_cases ADD COLUMN ai_last_error TEXT")
     if "ai_category" not in columns:
         migrations.append("ALTER TABLE insolvency_cases ADD COLUMN ai_category VARCHAR(255)")
     if "ai_summary" not in columns:
@@ -177,10 +186,8 @@ def migrate_db() -> None:
             for migration in migrations:
                 connection.execute(text(migration))
 
-    document_columns = {
-        row[1]
-        for row in engine.connect().execute(text("PRAGMA table_info(insolvency_documents)")).fetchall()
-    }
+    with engine.connect() as connection:
+        document_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(insolvency_documents)"))}
     document_migrations = []
     if "deleted_at" not in document_columns:
         document_migrations.append("ALTER TABLE insolvency_documents ADD COLUMN deleted_at DATETIME")
@@ -190,11 +197,11 @@ def migrate_db() -> None:
             for migration in document_migrations:
                 connection.execute(text(migration))
 
-    client_columns = {
-        row[1]
-        for row in engine.connect().execute(text("PRAGMA table_info(clients)")).fetchall()
-    }
+    with engine.connect() as connection:
+        client_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(clients)"))}
     client_migrations = []
+    if "last_check_error" not in client_columns:
+        client_migrations.append("ALTER TABLE clients ADD COLUMN last_check_error TEXT")
     if "change_seen_at" not in client_columns:
         client_migrations.append("ALTER TABLE clients ADD COLUMN change_seen_at DATETIME")
     if "project" not in client_columns:

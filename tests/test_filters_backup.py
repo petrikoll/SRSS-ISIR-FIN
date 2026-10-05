@@ -1,3 +1,4 @@
+from contextlib import closing
 """Regression checks using only synthetic data in a temporary directory."""
 from datetime import date
 import gc
@@ -9,9 +10,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+from test_data_safety import AuditCases
 
 
-class FiltersAndBackupTests(unittest.TestCase):
+class FiltersAndBackupTests(AuditCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import storage_paths
@@ -38,6 +40,11 @@ class FiltersAndBackupTests(unittest.TestCase):
         cls.runtime.cleanup()
 
     def setUp(self):
+        self.module.app.config["WTF_CSRF_ENABLED"] = False
+        self.module.check_progress["state"] = "idle"
+        with closing(sqlite3.connect(self.module.DATABASE_PATH)) as conn, conn:
+            for table in ("document_extraction", "case_claims_review", "case_performance_report", "case_completion_report", "case_trustee_accounting"):
+                conn.execute(f'DELETE FROM "{table}"')
         session = self.module.SessionLocal()
         try:
             for client in session.query(self.module.Client).all():
@@ -55,7 +62,7 @@ class FiltersAndBackupTests(unittest.TestCase):
         self.document.parent.mkdir(parents=True, exist_ok=True)
         self.document.write_bytes(b"%PDF-1.4 synthetic regression document\n")
         (self.root / "data" / "manual_download_rules.json").write_text(
-            json.dumps({"synthetic_rule": True}), encoding="utf-8",
+            json.dumps([{"synthetic_rule": True}]), encoding="utf-8",
         )
         (self.root / "data" / "settings.json").write_text(
             json.dumps({"gemini_api_key": "SYNTHETIC_SECRET_DO_NOT_EXPORT"}),
@@ -111,7 +118,7 @@ class FiltersAndBackupTests(unittest.TestCase):
         self.assertIn("app.db-wal", html)
 
     def test_backup_contains_live_wal_database_documents_rules_but_no_secrets(self):
-        with sqlite3.connect(self.module.DATABASE_PATH) as live:
+        with closing(sqlite3.connect(self.module.DATABASE_PATH)) as live, live:
             live.execute("PRAGMA journal_mode=WAL")
             live.execute("UPDATE clients SET last_found_change = 'synthetic WAL history'")
             live.commit()
@@ -130,7 +137,7 @@ class FiltersAndBackupTests(unittest.TestCase):
                 self.assertNotIn(b"SYNTHETIC_SECRET_DO_NOT_EXPORT", response.data)
                 restored = self.root / "roundtrip.db"
                 restored.write_bytes(archive.read("data/app.db"))
-                with sqlite3.connect(restored) as restored_db:
+                with closing(sqlite3.connect(restored)) as restored_db, restored_db:
                     self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                     row = restored_db.execute(
                         "SELECT first_name, last_name, project, last_found_change FROM clients",

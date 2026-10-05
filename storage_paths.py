@@ -10,9 +10,10 @@ APP_DIR_NAME = "ISIR-Kontrola"
 
 def app_base_dir() -> Path:
     if getattr(sys, "frozen", False):
-        local_app_data = Path(os.environ.get("LOCALAPPDATA", "")).expanduser()
-        if local_app_data:
-            return local_app_data / APP_DIR_NAME
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            raise RuntimeError("Windows neposkytl umístění LOCALAPPDATA. Databáze nebyla vytvořena.")
+        return Path(local_app_data).expanduser() / APP_DIR_NAME
     return Path(__file__).resolve().parent
 
 

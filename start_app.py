@@ -10,6 +10,7 @@ import traceback
 import webbrowser
 import ctypes
 import json
+from ctypes import wintypes
 from pathlib import Path
 from shutil import which
 
@@ -22,9 +23,8 @@ ERROR_ALREADY_EXISTS = 183
 
 
 def _app_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    from storage_paths import app_base_dir
+    return app_base_dir()
 
 
 def _find_free_port(host: str = APP_HOST) -> int:
@@ -63,13 +63,19 @@ def _write_state(base_dir: Path, port: int) -> None:
         json.dump(state, state_file)
 
 
-def _create_single_instance_mutex():
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+def _create_single_instance_mutex(base_dir: Path):
+    create_mutex = ctypes.windll.kernel32.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    create_mutex.restype = wintypes.HANDLE
+    # Retain the legacy name so versions 1.2 and 1.3 cannot write concurrently.
+    mutex = create_mutex(None, False, MUTEX_NAME)
+    if not mutex:
+        raise ctypes.WinError()
     already_running = ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS
     return mutex, already_running
 
 
-def _open_existing_instance(base_dir: Path) -> bool:
+def _open_existing_instance(base_dir: Path, open_browser: bool = True) -> bool:
     state = _read_state(base_dir)
     try:
         port = int(state.get("port", 0))
@@ -80,7 +86,7 @@ def _open_existing_instance(base_dir: Path) -> bool:
         return False
 
     _write_log(base_dir, f"Aplikace uz bezi na {_app_url(port)}. Oteviram existujici instanci.")
-    if not _open_app_window(port):
+    if open_browser and not _open_app_window(port):
         _open_browser_when_ready(port)
     return True
 
@@ -161,43 +167,58 @@ def _run_server(port: int) -> None:
     serve(app, host=APP_HOST, port=port, threads=8)
 
 
-def main() -> None:
+def main(open_browser: bool = True) -> None:
     base_dir = _app_base_dir()
+    base_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(base_dir)
     (base_dir / "data").mkdir(parents=True, exist_ok=True)
 
-    mutex, already_running = _create_single_instance_mutex()
-    if already_running:
-        if _open_existing_instance(base_dir):
-            return
-        _write_log(base_dir, "Detekovana jina instance, ale nepodarilo se otevrit jeji server.")
-
-    _write_log(base_dir, "Spoustim ISIR Kontrola.")
-
+    mutex, already_running = _create_single_instance_mutex(base_dir)
     try:
+        if already_running:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if _open_existing_instance(base_dir, open_browser=open_browser):
+                    return
+                time.sleep(0.3)
+            raise RuntimeError("Jiná instance aplikace již běží, ale neodpovídá. Ukončete ISIR-Kontrola.exe ve Správci úloh a spusťte aplikaci znovu.")
+
+        _write_log(base_dir, "Spoustim ISIR Kontrola.")
         port = _find_free_port()
         _write_log(base_dir, f"Vybrany port: {port}.")
 
-        threading.Thread(target=_run_server, args=(port,), daemon=True).start()
+        server_errors = []
+
+        def server_worker():
+            try:
+                _run_server(port)
+            except Exception:
+                server_errors.append(traceback.format_exc())
+                _write_log(base_dir, "Chyba serveru:\n" + server_errors[-1])
+
+        threading.Thread(target=server_worker, daemon=True).start()
         if not _wait_for_server(port):
-            raise RuntimeError("Flask server se nepodarilo spustit.")
+            raise RuntimeError("Flask server se nepodařilo spustit. Podrobnosti jsou v startup.log.")
 
         _write_state(base_dir, port)
         _write_log(base_dir, f"Server bezi na {_app_url(port)}.")
-        if not _open_app_window(port):
+        if open_browser and not _open_app_window(port):
             _open_browser_when_ready(port)
-        _write_log(base_dir, "Prohlizec byl otevren nebo predan systemu.")
+        while True:
+            time.sleep(1)
+            if server_errors:
+                raise RuntimeError("Server aplikace se neočekávaně ukončil. Podrobnosti jsou v startup.log.")
     except Exception:
         _write_log(base_dir, "Chyba pri startu aplikace:")
         _write_log(base_dir, traceback.format_exc())
         raise
 
-    while True:
-        time.sleep(3600)
-
-    if mutex:
-        ctypes.windll.kernel32.CloseHandle(mutex)
+    finally:
+        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        close_handle(mutex)
 
 
 if __name__ == "__main__":
-    main()
+    main(open_browser="--headless" not in sys.argv)

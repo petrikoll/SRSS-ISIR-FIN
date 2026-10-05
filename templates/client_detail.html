@@ -1,11 +1,7 @@
 <!doctype html>
 {% set case = primary_case(client) %}
-{% set ai_pending = case and (
-    ((case.ai_summary and case.ai_summary.startswith("AI shrnutí se připravuje")) or (case.ai_summary and case.ai_summary.startswith("AI shrnutí vybraných dokumentů se připravuje")))
-    or (case.ai_summary and case.ai_summary.startswith("AI ověření údajů"))
-    or (case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje"))
-) %}
-{% set case_study_pending = case and case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje") %}
+{% set ai_pending = case and case.ai_pending_kind %}
+{% set case_study_pending = case and case.ai_pending_kind == "study" %}
 {% set case_study_ready = case and case.ai_case_study and not case_study_pending %}
 
 <html lang="cs">
@@ -1316,6 +1312,7 @@
 
 <body>
 <main>
+    {% if client.last_check_error %}<p role="alert">{{ client.last_check_error }}</p>{% endif %}
     <div class="top">
         <div class="title-row">
             <h1>{{ client.last_name }} {{ client.first_name }}</h1>
@@ -1518,14 +1515,14 @@
 
     <section class="background-status-row" id="background-status-row" aria-live="polite">
         {% if case %}
-            {% if case.ai_summary and (case.ai_summary.startswith("AI shrnutí se připravuje") or case.ai_summary.startswith("AI shrnutí vybraných dokumentů se připravuje")) %}
+            {% if case.ai_pending_kind == "summary" %}
                 <span class="background-status-pill background-status-working">AI vytváří shrnutí dokumentů</span>
-            {% elif case.ai_summary and case.ai_summary.startswith("AI ověření údajů") %}
+            {% elif case.ai_pending_kind == "verify" %}
                 <span class="background-status-pill background-status-working">AI ověřuje údaje</span>
-            {% elif case.ai_case_study and case.ai_case_study.startswith("AI kazuistika se připravuje") %}
+            {% elif case.ai_pending_kind == "study" %}
                 <span class="background-status-pill background-status-working">AI aktualizuje kazuistiku</span>
-            {% elif case.ai_category and ("selhala" in case.ai_category|lower or "selhalo" in case.ai_category|lower) %}
-                <span class="background-status-pill background-status-error">Poslední AI úloha selhala</span>
+            {% elif case.ai_last_error %}
+                <span class="background-status-pill background-status-error">{{ case.ai_last_error }}</span>
             {% else %}
                 <span class="background-status-pill background-status-idle">Bez běžící AI úlohy</span>
             {% endif %}
@@ -2712,6 +2709,7 @@
     const aiRefreshTimer = window.setInterval(async function () {
         try {
             const response = await fetch(window.location.href, { cache: "no-store" });
+            if (!response.ok) { return; }
             const html = await response.text();
             const parsed = new DOMParser().parseFromString(html, "text/html");
 
@@ -2762,12 +2760,7 @@
                 autoOpenFreshDocumentSummary();
             }
 
-            if (
-                !html.includes("AI shrnutí se připravuje")
-                && !html.includes("AI shrnutí vybraných dokumentů se připravuje")
-                && !html.includes("AI ověření údajů")
-                && !html.includes("AI kazuistika se připravuje")
-            ) {
+            if (!parsed.querySelector("#background-status-row .background-status-working")) {
                 window.clearInterval(aiRefreshTimer);
             }
         } catch (error) {

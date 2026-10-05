@@ -14,7 +14,7 @@ from urllib.parse import urljoin
 from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import html
 from requests import Session
-from sqlalchemy import case, exc
+from sqlalchemy import case, exc as sqlalchemy_exc
 from zeep import Client as SoapClient, client
 from zeep.helpers import serialize_object
 from zeep.transports import Transport
@@ -28,6 +28,8 @@ from ai_analysis import (
 )
 from structured_data import document_has_extraction
 from storage_paths import DOCUMENTS_DIR
+from runtime_guard import CoordinatedExecutor
+from pdf_io import download_pdf_content, write_pdf_atomic
 
 
 ISIR_WSDL = "https://isir.justice.cz:8443/isir_cuzk_ws/IsirWsCuzkService?wsdl"
@@ -43,14 +45,22 @@ def make_soap_client() -> SoapClient:
     session = Session()
     session.trust_env = False
     transport = Transport(session=session, timeout=20, operation_timeout=30)
-    return SoapClient(wsdl=ISIR_WSDL, transport=transport)
+    try:
+        return SoapClient(wsdl=ISIR_WSDL, transport=transport)
+    except BaseException:
+        session.close()
+        raise
 
 
 def make_public_soap_client() -> SoapClient:
     session = Session()
     session.trust_env = False
     transport = Transport(session=session, timeout=10, operation_timeout=12)
-    return SoapClient(wsdl=ISIR_PUBLIC_WSDL, transport=transport)
+    try:
+        return SoapClient(wsdl=ISIR_PUBLIC_WSDL, transport=transport)
+    except BaseException:
+        session.close()
+        raise
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -191,6 +201,8 @@ def _document_folder_name(document: InsolvencyDocument) -> str:
 
 
 def _download_document(session: Session, document: InsolvencyDocument) -> None:
+    if document.deleted_at:
+        return
     case_dir = DOCUMENT_STORAGE / _document_folder_name(document)
     case_dir.mkdir(parents=True, exist_ok=True)
     url_hash = hashlib.sha1(document.source_url.encode("utf-8")).hexdigest()[:10]
@@ -201,20 +213,15 @@ def _download_document(session: Session, document: InsolvencyDocument) -> None:
         current = Path(document.local_path)
         if current.exists():
             if current.resolve() != target.resolve():
-                target.write_bytes(current.read_bytes())
-                try:
-                    current.unlink()
-                except OSError:
-                    pass
+                write_pdf_atomic(target, current.read_bytes())
                 document.local_path = str(target)
             return
 
-    response = session.get(document.source_url, timeout=30)
-    response.raise_for_status()
-    target.write_bytes(response.content)
+    content = download_pdf_content(session, document.source_url)
+    write_pdf_atomic(target, content)
 
     document.local_path = str(target)
-    document.file_size = len(response.content)
+    document.file_size = len(content)
 
 
 def _upsert_document(
@@ -587,6 +594,8 @@ def _is_structured_form_document(document: InsolvencyDocument) -> bool:
 def _structured_form_documents_without_extraction(case: InsolvencyCase) -> list[InsolvencyDocument]:
     documents = []
     for document in sorted(case.documents, key=lambda item: (item.event_at or datetime.min, item.id or 0)):
+        if document.deleted_at:
+            continue
         if not _is_structured_form_document(document):
             continue
         if document_has_extraction(document.id):
@@ -702,6 +711,7 @@ def _auto_generate_case_study_if_needed(
 
     try:
         analyze_case_study(case)
+        case.ai_last_error = None
 
         # 3) Kazuistika už existovala a teď se aktualizovala
         if has_case_study:
@@ -722,6 +732,9 @@ def _auto_generate_case_study_if_needed(
         }
 
     except Exception as exc:
+        if isinstance(exc, sqlalchemy_exc.SQLAlchemyError):
+            raise
+        case.ai_last_error = f"Automatická kazuistika selhala ({exc.__class__.__name__})."
         logger.warning(
             "Automatické vytvoření kazuistiky selhalo pro spis %s: %s",
             case.spisova_znacka,
@@ -802,93 +815,93 @@ def enrich_case_from_detail_page(case: InsolvencyCase) -> None:
     if not case.detail_url:
         return
 
-    session = Session()
-    session.trust_env = False
-    response = session.get(case.detail_url, timeout=15)
-    response.raise_for_status()
+    with Session() as session:
+        session.trust_env = False
+        response = session.get(case.detail_url, timeout=15)
+        response.raise_for_status()
 
-    tree = html.fromstring(response.content)
-    _extract_claims_info_from_text(case, tree.text_content())
-    document_rows = []
-    all_pdf_links = []
-    for row in tree.xpath("//tr"):
-        cells = [" ".join(cell.text_content().split()) for cell in row.xpath("./td|./TD")]
-        pdf_anchors = [a for a in row.xpath(".//a") if "/isir/doc/dokument.PDF" in (a.get("href") or "")]
-        pdf_links = [urljoin(case.detail_url, anchor.get("href")) for anchor in pdf_anchors]
-        all_pdf_links.extend(pdf_links)
+        tree = html.fromstring(response.content)
+        _extract_claims_info_from_text(case, tree.text_content())
+        document_rows = []
+        all_pdf_links = []
+        for row in tree.xpath("//tr"):
+            cells = [" ".join(cell.text_content().split()) for cell in row.xpath("./td|./TD")]
+            pdf_anchors = [a for a in row.xpath(".//a") if "/isir/doc/dokument.PDF" in (a.get("href") or "")]
+            pdf_links = [urljoin(case.detail_url, anchor.get("href")) for anchor in pdf_anchors]
+            all_pdf_links.extend(pdf_links)
 
-        if len(cells) < 4 or not pdf_links:
-            continue
+            if len(cells) < 4 or not pdf_links:
+                continue
 
-        event_at = None
-        if len(cells) > 2:
-            event_at = _parse_czech_datetime(f"{cells[1]} {cells[2]}") or _parse_czech_datetime(cells[1])
+            event_at = None
+            if len(cells) > 2:
+                event_at = _parse_czech_datetime(f"{cells[1]} {cells[2]}") or _parse_czech_datetime(cells[1])
 
-        is_main_case_event = not cells[0].startswith("P")
-        for index, pdf_url in enumerate(pdf_links):
-            document_type = "hlavní dokument" if index == 0 else "vedlejší dokument"
-            document = _upsert_document(case, event_at, cells[3], document_type, pdf_url)
-            document_rows.append(
-                {
-                    "event_at": event_at,
-                    "description": cells[3],
-                    "url": pdf_url,
-                    "is_main_case_event": is_main_case_event,
-                    "document": document,
-                }
-            )
+            is_main_case_event = not cells[0].startswith("P")
+            for index, pdf_url in enumerate(pdf_links):
+                document_type = "hlavní dokument" if index == 0 else "vedlejší dokument"
+                document = _upsert_document(case, event_at, cells[3], document_type, pdf_url)
+                document_rows.append(
+                    {
+                        "event_at": event_at,
+                        "description": cells[3],
+                        "url": pdf_url,
+                        "is_main_case_event": is_main_case_event,
+                        "document": document,
+                    }
+                )
 
-    case.document_count = len(all_pdf_links)
-    _update_claims_summary(case)
-    for document in case.documents:
-        _download_document(session, document)
+        case.document_count = len(all_pdf_links)
+        _update_claims_summary(case)
+        for document in case.documents:
+            _download_document(session, document)
 
-    main_document_rows = [row for row in document_rows if row["is_main_case_event"]]
-    latest_document = max(
-        main_document_rows or document_rows,
-        key=lambda row: row["event_at"] or datetime.min,
-        default=None,
-    )
-    if latest_document:
-        case.document_url = latest_document["url"]
-        case.last_event_at = latest_document["event_at"]
-        case.last_event_description = latest_document["description"]
+        main_document_rows = [row for row in document_rows if row["is_main_case_event"]]
+        latest_document = max(
+            main_document_rows or document_rows,
+            key=lambda row: row["event_at"] or datetime.min,
+            default=None,
+        )
+        if latest_document:
+            case.document_url = latest_document["url"]
+            case.last_event_at = latest_document["event_at"]
+            case.last_event_description = latest_document["description"]
 
-    for row in tree.xpath("//tr"):
-        cells = [" ".join(cell.text_content().split()) for cell in row.xpath("./td|./TD")]
-        row_datetime = None
-        for index, cell in enumerate(cells):
-            row_datetime = _parse_czech_datetime(cell)
-            if row_datetime:
-                if index + 1 < len(cells) and ":" in cells[index + 1]:
-                    row_datetime = _parse_czech_datetime(f"{cell} {cells[index + 1]}") or row_datetime
-                break
+        for row in tree.xpath("//tr"):
+            cells = [" ".join(cell.text_content().split()) for cell in row.xpath("./td|./TD")]
+            row_datetime = None
+            for index, cell in enumerate(cells):
+                row_datetime = _parse_czech_datetime(cell)
+                if row_datetime:
+                    if index + 1 < len(cells) and ":" in cells[index + 1]:
+                        row_datetime = _parse_czech_datetime(f"{cell} {cells[index + 1]}") or row_datetime
+                    break
 
-        if row_datetime and case.last_event_at is None:
-            case.last_event_at = row_datetime
-            descriptions = [
-                cell
-                for cell in cells
-                if cell
-                and not _parse_czech_datetime(cell)
-                and ":" not in cell
-                and "plný text" not in cell
-                and "kB" not in cell
-            ]
-            if descriptions:
-                case.last_event_description = descriptions[0]
+            if row_datetime and case.last_event_at is None:
+                case.last_event_at = row_datetime
+                descriptions = [
+                    cell
+                    for cell in cells
+                    if cell
+                    and not _parse_czech_datetime(cell)
+                    and ":" not in cell
+                    and "plný text" not in cell
+                    and "kB" not in cell
+                ]
+                if descriptions:
+                    case.last_event_description = descriptions[0]
 
-        row_text = " ".join(row.text_content().split())
-        if "Vyhláška o zahájení insolvenčního řízení" not in row_text:
-            continue
+            row_text = " ".join(row.text_content().split())
+            if "Vyhláška o zahájení insolvenčního řízení" not in row_text:
+                continue
 
-        for index, cell in enumerate(cells):
-            if _parse_czech_datetime(cell):
-                combined = cell
-                if index + 1 < len(cells) and ":" in cells[index + 1]:
-                    combined = f"{cell} {cells[index + 1]}"
-                case.proceeding_started_at = _parse_czech_datetime(combined) or _parse_czech_datetime(cell)
-                return
+            for index, cell in enumerate(cells):
+                if _parse_czech_datetime(cell):
+                    combined = cell
+                    if index + 1 < len(cells) and ":" in cells[index + 1]:
+                        combined = f"{cell} {cells[index + 1]}"
+                    case.proceeding_started_at = _parse_czech_datetime(combined) or _parse_czech_datetime(cell)
+                    return
 
 
 def _status_from_rows(rows: list[dict[str, Any]]) -> str:
@@ -932,6 +945,7 @@ def check_client(client: Client, soap_client: SoapClient | None = None) -> None:
     new_hash = _result_hash(rows)
 
     client.last_checked_at = datetime.utcnow()
+    client.last_check_error = None
     client.insolvency_status = _status_from_rows(rows)
 
     for row in rows:
@@ -1008,8 +1022,10 @@ def check_client_with_retry(client: Client, soap_client: SoapClient | None) -> N
         try:
             check_client(client, soap_client)
             return
-        except Exception as exc:
-            last_error = exc
+        except sqlalchemy_exc.SQLAlchemyError:
+            raise
+        except Exception as error:
+            last_error = error
             if attempt == 0:
                 time.sleep(2)
     if last_error is not None:
@@ -1034,6 +1050,9 @@ def check_all_clients(
         clients = query.all()
 
         _notify_progress(progress_callback, "started", total=len(clients))
+        if cancel_callback is not None and cancel_callback():
+            _notify_progress(progress_callback, "cancelled")
+            return
 
         if clients:
             try:
@@ -1046,7 +1065,7 @@ def check_all_clients(
 
                 for client in clients:
                     client.last_checked_at = now
-                    client.insolvency_status = message
+                    client.last_check_error = message
                     _notify_progress(progress_callback, "client_error", client=client, error=message)
 
                 session.commit()
@@ -1054,6 +1073,7 @@ def check_all_clients(
                 return
 
         for client in clients:
+            client_id = client.id
             if cancel_callback is not None and cancel_callback():
                 _notify_progress(progress_callback, "cancelled")
                 return
@@ -1061,6 +1081,7 @@ def check_all_clients(
             _notify_progress(progress_callback, "client_started", client=client)
 
             try:
+                warnings = []
                 before_document_urls = {
                     document.source_url
                     for case in client.cases
@@ -1112,6 +1133,8 @@ def check_all_clients(
                             progress_callback=progress_callback,
                             client=client,
                         )
+                        if structured_result.get("errors"):
+                            warnings.append("Část formulářových dokumentů se nepodařilo vytěžit.")
 
                         _notify_progress(
                             progress_callback,
@@ -1124,24 +1147,32 @@ def check_all_clients(
                             case,
                             new_document_urls=case_new_document_urls,
                         )
+                        if case.ai_last_error:
+                            warnings.append(case.ai_last_error)
 
                         print(case_study_result.get("status", "Kazuistika – bez výsledku"))
                         print("Důvod:", case_study_result.get("reason", "Funkce nevrátila důvod."))
 
 
                     
-                    except Exception as exc:
+                    except sqlalchemy_exc.SQLAlchemyError:
+                        raise
+                    except Exception as error:
                         logger.warning(
                             "Nacteni detailu ISIR selhalo pro spis %s: %s",
                             case.spisova_znacka,
-                            exc,
+                            error.__class__.__name__,
                         )
+                        warnings.append("Detail řízení nebo jeho dokumenty se nepodařilo úplně načíst.")
 
 
                 if USE_PUBLIC_EVENT_WS:
                     try:
                         enrich_cases_with_public_events(client.cases)
+                    except sqlalchemy_exc.SQLAlchemyError:
+                        raise
                     except Exception:
+                        warnings.append("Veřejné události ISIR se nepodařilo načíst.")
                         logger.warning(
                             "Dohledani detailu ISIR_PUBLIC_WS selhalo pro klienta id=%s",
                             client.id,
@@ -1163,24 +1194,33 @@ def check_all_clients(
                     if document.source_url
                 ]
 
+                if warnings:
+                    client.last_check_error = " ".join(sorted(set(warnings)))
+                    session.commit()
                 _notify_progress(
                     progress_callback,
-                    "client_success",
+                    "client_error" if warnings else "client_success",
                     client=client,
+                    error=client.last_check_error,
                     new_document_count=len(new_documents),
                     document_count=len(current_documents),
                     new_document_titles=[document.title for document in new_documents[:5]],
                 )
 
-            except Exception as exc:
-                logger.exception("ISIR kontrola selhala pro klienta id=%s", client.id)
-
-                client.last_checked_at = datetime.utcnow()
-                error_message = f"Kontrola selhala: {exc.__class__.__name__} - {exc}"
-                client.insolvency_status = error_message
-
-                session.commit()
-
+            except Exception as error:
+                logger.exception("ISIR kontrola selhala pro klienta id=%s", client_id)
+                session.rollback()
+                error_message = f"Kontrola selhala: {error.__class__.__name__}. Poslední známý stav zůstal zachován."
+                try:
+                    client = session.get(Client, client_id)
+                    if client is not None:
+                        client.last_checked_at = datetime.utcnow()
+                        client.last_check_error = error_message
+                        session.commit()
+                except Exception:
+                    session.rollback()
+                    logger.exception("Nepodařilo se uložit chybu kontroly klienta id=%s", client_id)
+                    client = None
                 _notify_progress(progress_callback, "client_error", client=client, error=error_message)
 
             time.sleep(1.5)
@@ -1193,13 +1233,17 @@ def check_all_clients(
 
     finally:
         session.close()
+        if soap_client is not None:
+            soap_client.transport.session.close()
 
 
 
-def start_scheduler() -> BackgroundScheduler:
-    scheduler = BackgroundScheduler(timezone="Europe/Prague")
+def start_scheduler(check_job=None) -> BackgroundScheduler:
+    scheduler = BackgroundScheduler(
+        timezone="Europe/Prague", executors={"default": CoordinatedExecutor()},
+    )
     scheduler.add_job(
-        check_all_clients,
+        check_job or check_all_clients,
         "cron",
         day_of_week="mon-fri",
         hour=10,
@@ -1210,7 +1254,7 @@ def start_scheduler() -> BackgroundScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        check_all_clients,
+        check_job or check_all_clients,
         "cron",
         day_of_week="mon-fri",
         hour=14,

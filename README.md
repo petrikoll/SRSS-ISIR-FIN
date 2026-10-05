@@ -108,7 +108,13 @@ Postup platí pro stejný účet Windows a původní instalační cestu `%LOCALA
 4. Překopírujte `data/app.db` ze ZIPu do instalační podsložky `data`. Překopírujte také `downloaded_documents` a případná vlastní pravidla do odpovídajících složek.
 5. Spusťte aplikaci a ověřte seznam klientů i otevření dokumentů. Pokud přeinstalace odstranila nastavení, zadejte znovu Gemini API klíč.
 
-Pro přenos na jiný PC je potřeba upravit uložené absolutní cesty dokumentů. Tento ruční postup je určený pro obnovu na stejném PC.
+Tento ruční postup je určený pro obnovu na stejném PC. Od verze **1.3** je doporučená obnova přímo v **Nastavení a záloha dat → Obnovit data ze zálohy**. Archiv se ověří před výměnou dat, aktuální stav se zálohuje a při selhání výměny se vrátí. Obnova upraví cesty PDF i při přenosu na jiný PC; API klíč na cílovém PC zůstane zachován.
+
+## Kontrola spolehlivosti a ochrana dat (1.3)
+
+Podrobné nálezy, opravy, ověření i meze jsou v [AUDIT-1.3.md](AUDIT-1.3.md). Verze 1.3 řídí souběh kontrol a AI, zálohuje před obnovou/mazáním, zachová uložené výstupy při selhání nové AI úlohy a poslední známý stav při výpadku ISIR. Ověřuje PDF a zapisuje soubory i nastavení atomicky. Nové pomocné skripty při resetu ani odinstalaci bez zálohy nemažou klientská data.
+
+Aktualizace existujícího desktopu: [installer/AKTUALIZACE-1.3.txt](installer/AKTUALIZACE-1.3.txt). Instalace a datové úložiště jsou `%LOCALAPPDATA%\ISIR-Kontrola`, databáze `data/app.db`, PDF `downloaded_documents`, kopie záloh `exports`. Dokončete kontroly před zálohou či obnovou; aplikace při souběhu akci odmítne s vysvětlením. ZIP obnova podporuje archivy do 2 GB a rozbalená data do 10 GB.
 
 ### Aktualizace existujícího desktopu
 

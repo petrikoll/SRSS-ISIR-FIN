@@ -1,0 +1,31 @@
+ISIR Kontrola 1.3 – aktualizace a ochrana uložených dat
+
+1. Úplně ukončete ISIR-Kontrola.exe ve Správci úloh.
+2. Win+R → %LOCALAPPDATA%\ISIR-Kontrola
+3. Zkopírujte CELÝ obsah této složky do zálohy mimo instalační složku.
+   Zachovejte zejména data\app.db, downloaded_documents a settings.json.
+4. Staré EXE přesuňte do zálohy. Na jeho místo zkopírujte nové ISIR-Kontrola.exe.
+   Překopírujte také přiložené reset_data.cmd a uninstall.cmd; nové skripty
+   nevymažou klientská data. Složky data, downloaded_documents a exports
+   ponechte na místě. Nespouštějte starý instalátor.
+5. Spusťte původním zástupcem a ověřte klienty i PDF. Nastavení uvádí verzi 1.3.
+6. Stáhněte zálohu dat ZIP a uložte ji mimo instalační složku.
+
+Obnova ZIP: Nastavení a záloha dat → Obnovit data ze zálohy.
+Obnova nahradí aktuální klientská data. Předem se automaticky vytvoří ZIP
+původního stavu v exports. Archiv se nejprve ověří; při chybě výměny se
+původní databáze a dokumenty vrátí. Cesty PDF se přepojí i na jiném PC.
+Aktuální API klíč zůstane zachován; klientská záloha jej neobsahuje.
+Před zálohou, obnovou či mazáním počkejte na dokončení ISIR a AI úloh.
+
+Novinky: ochrana obnovy a mazání, automatické zálohy, řízení souběhu úloh,
+zachování posledního známého stavu při chybě ISIR, zachování AI výstupů při
+neúspěšné nové analýze, oprava přerušených úloh, ověřené/atomicky zapisované
+PDF a nastavení. Obsahuje také opravu filtrů a zálohování z verze 1.2.
+
+Ověření: 33 automatizovaných testů se syntetickými daty a zkouška skutečného
+EXE s odděleným dočasným úložištěm. Reálná data a druhý PC nebyly dostupné.
+Kontrola není zárukou, že v celé aplikaci nezbývá žádná chyba.
+
+Pokud nový program nenaběhne, ukončete jej a vraťte původní EXE ze zálohy.
+Podrobnosti startu jsou v %LOCALAPPDATA%\ISIR-Kontrola\startup.log.

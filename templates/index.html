@@ -1085,7 +1085,7 @@
                             <td data-label="Spisová značka">{{ case.spisova_znacka if case else "-" }}</td>
                             <td data-label="Datum prvního podání">{{ first_filing_date(case)|format_date }}</td>
                             <td data-label="Poslední událost">{{ event_line(case) }}</td>
-                            <td data-label="Datum poslední kontroly">{{ client.last_checked_at|format_datetime }}</td>
+                            <td data-label="Datum poslední kontroly">{{ client.last_checked_at|format_datetime }}{% if client.last_check_error %}<br><small role="alert">{{ client.last_check_error }}</small>{% endif %}</td>
                             <td data-label="Akce">
                                 <div class="actions">
                                     {% if check_running %}
