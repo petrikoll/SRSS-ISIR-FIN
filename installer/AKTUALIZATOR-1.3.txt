@@ -1,8 +1,12 @@
-ISIR Kontrola 1.3 – jednoduchá aktualizace
+ISIR Kontrola 1.3 – jednoduchá aktualizace, oprava 2
 
-1. Stáhněte soubor ISIR-Kontrola-Aktualizace-1.3.exe.
+1. Stáhněte soubor ISIR-Kontrola-Aktualizace-1.3-oprava-2.exe.
 2. Otevřete jej dvojklikem a stiskněte Aktualizovat.
 3. Počkejte na zprávu o dokončení. Aplikace se znovu spustí sama.
+
+Pokud zůstalo otevřené okno původního aktualizátoru s chybou,
+potvrďte OK a zavřete původní aktualizátor tlačítkem Zavřít.
+Potom otevřete nový soubor. Jeho nadpis obsahuje „oprava 2“.
 
 Není potřeba hledat instalační složku, kopírovat program ani otevírat
 Správce úloh. Před kliknutím na Aktualizovat uložte rozpracované úpravy.
@@ -14,6 +18,11 @@ Nejdříve ověří balíček, automaticky ukončí pouze příslušné procesy
 ISIR-Kontrola.exe, zálohuje původní program a data a teprve potom vymění
 EXE a pomocné skripty. Složky data a downloaded_documents nemaže.
 
+Oprava 2 řeší výměnu programových souborů s atributem „jen pro čtení“
+a opakuje výměnu při dočasném blokování souboru. Pokud Windows dovolí
+přejmenování, ale odmítne přepsání EXE, uchová původní soubor jako .bak
+a uloží nový pod původním názvem. Oprávnění Windows nemění.
+
 Záloha se automaticky uloží vedle instalační složky:
 %LOCALAPPDATA%\ISIR-Kontrola-zalohy
 
@@ -22,9 +31,11 @@ neodesílá. Nejde o klientský ZIP export z aplikace, který klíč neobsahuje.
 Při neúspěšném startu se aktualizátor pokusí automaticky vrátit původní
 program a databázi. Chyby zapisuje do aktualizace.log ve složce záloh.
 
-Ověřeno: 9 testů aktualizátoru, 33 testů aplikace a skutečné spuštění
+Ověřeno: 14 testů aktualizátoru, 33 testů aplikace a skutečné spuštění
 sestaveného aktualizátoru proti běžící aplikaci v dočasném úložišti.
 Proběhlo automatické ukončení, záloha, výměna, nové spuštění a ověření
-zachování syntetického klienta, dokumentu a nastavení. Pro tuto zkoušku
+zachování syntetického klienta, dokumentu a nastavení. EXE a pomocný
+skript byly při zkoušce označeny „jen pro čtení“. Pro tuto zkoušku
 byla jako běžící instalace použita verze 1.3. Starší instalace na druhém
 PC nebyla přímo dostupná; její ukončení nevyžaduje žádné nové API.
+Přesná příčina původního WinError 5 na druhém PC nebyla potvrzena.

@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
 from urllib.request import build_opener, ProxyHandler
 import zipfile
+from uuid import uuid4
 
 EXE_NAME = "ISIR-Kontrola.exe"
 
@@ -164,6 +166,51 @@ def launch_application(executable, headless=False):
     return subprocess.Popen(command, cwd=executable.parent, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+def _retryable_file_error(error):
+    return isinstance(error, PermissionError) or getattr(error, "winerror", None) in {5, 32, 33}
+
+
+def _replace_with_retries(source, target, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            # Remove only the DOS read-only flag on program files, preserving
+            # other attributes and ACLs. Client data never passes through here.
+            if os.name == "nt" and target.exists() and target.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY:
+                target.chmod(stat.S_IWRITE)
+            source.replace(target)
+            return
+        except OSError as error:
+            if not _retryable_file_error(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(.25)
+
+
+def replace_program_file(source, target, *, retry_timeout=10):
+    """Retry transient Windows locks, then preserve the old file before swapping."""
+    source, target = Path(source), Path(target)
+    if target.name not in {EXE_NAME, "reset_data.cmd", "uninstall.cmd"}:
+        raise ValueError("Výměna je povolena pouze pro soubory programu.")
+    try:
+        _replace_with_retries(source, target, retry_timeout)
+        return
+    except OSError as error:
+        if not _retryable_file_error(error) or not target.is_file() or not source.is_file():
+            raise
+    retained = target.with_name(target.name + ".pred-aktualizaci-" + uuid4().hex + ".bak")
+    # Some Windows image/scanner handles permit renaming but reject replacing
+    # an existing executable. Leave the retained copy on disk after success.
+    _replace_with_retries(target, retained, retry_timeout)
+    try:
+        _replace_with_retries(source, target, retry_timeout)
+    except BaseException as error:
+        try:
+            _replace_with_retries(retained, target, retry_timeout)
+        except OSError as rollback_error:
+            raise RuntimeError(f"Nový program nelze uložit. Původní EXE je zachováno v {retained}; klientská data tento krok nemění.") from rollback_error
+        raise error
+
+
 def verify_start(storage, process, previous_state, timeout=65):
     state_path = storage / "server-state.json"
     opener = build_opener(ProxyHandler({}))
@@ -207,7 +254,10 @@ def restore_previous(storage, executable, backup):
                 output.write(archive.read(name))
                 output.flush()
                 os.fsync(output.fileno())
-            temp.replace(target)
+            if name in {EXE_NAME, "reset_data.cmd", "uninstall.cmd"}:
+                replace_program_file(temp, target)
+            else:
+                temp.replace(target)
 
 
 def perform_update(storage, executable, payload, notify=lambda message: None, *, stop=stop_application, launch=launch_application, verify=verify_start, headless=False):
@@ -229,10 +279,10 @@ def perform_update(storage, executable, payload, notify=lambda message: None, *,
         notify("Zálohuji klienty, dokumenty a nastavení. Prosím vyčkejte…")
         write_backup(storage, executable, backup)
         notify("Instaluji novou verzi…")
-        (stage / EXE_NAME).replace(executable)
+        replace_program_file(stage / EXE_NAME, executable)
         changed = True
         for name in ("reset_data.cmd", "uninstall.cmd"):
-            (stage / name).replace(executable.parent / name)
+            replace_program_file(stage / name, executable.parent / name)
         notify("Znovu spouštím aplikaci…")
         process = launch(executable, headless=headless)
         verify(storage, process, previous_state)
@@ -249,7 +299,12 @@ def perform_update(storage, executable, payload, notify=lambda message: None, *,
                 raise RuntimeError(f"Aktualizace selhala a automatický návrat nebyl dokončen. Záloha původního stavu je v {backup}. Požádejte o pomoc; data ručně nemažte.") from rollback_error
             raise RuntimeError(f"Aktualizace se nepodařila. Původní program i databáze byly vráceny. Záloha: {backup}") from exc
         if stopped:
-            launch(executable, headless=headless)
+            try:
+                launch(executable, headless=headless)
+            except OSError as restart_error:
+                raise RuntimeError(f"Aktualizace nebyla dokončena a původní program nelze spustit. Databáze ani API klíč se v této fázi neměnily. Záloha: {backup if backup.exists() else 'nebyla dokončena'}. Podrobnosti jsou v aktualizace.log.") from restart_error
+            if isinstance(exc, OSError) and _retryable_file_error(exc):
+                raise RuntimeError(f"Windows stále blokuje výměnu programu {executable.name} (kód {getattr(exc, 'winerror', None) or exc.errno}). Původní program byl znovu spuštěn. Databáze ani API klíč se v této fázi neměnily. Záloha: {backup}. Podrobnosti jsou v aktualizace.log; soubory dat nemažte.") from exc
         raise
     finally:
         if stage.resolve().parent == executable.parent.resolve() and stage.name.startswith("isir-update-"):

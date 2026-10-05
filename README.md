@@ -118,11 +118,13 @@ Aktualizace existujícího desktopu: [installer/AKTUALIZACE-1.3.txt](installer/A
 
 ### Aktualizace existujícího desktopu
 
-**Jednoduchá varianta:** stáhněte z vydání 1.3 soubor `ISIR-Kontrola-Aktualizace-1.3.exe`, otevřete ho dvojklikem a klikněte **Aktualizovat**. Samostatný aktualizátor automaticky ukončí příslušné procesy aplikace, vytvoří místní zálohu programu, databáze, dokumentů a nastavení, vymění program a znovu jej spustí. Při neúspěšném startu vrátí původní EXE a databázi. Správce úloh ani ruční kopírování nejsou potřeba. Před kliknutím uložte rozpracované úpravy; běžící kontroly se přeruší. Podrobnosti: [installer/AKTUALIZATOR-1.3.txt](installer/AKTUALIZATOR-1.3.txt).
+**Jednoduchá varianta:** stáhněte z vydání 1.3 soubor `ISIR-Kontrola-Aktualizace-1.3-oprava-2.exe`, otevřete ho dvojklikem a klikněte **Aktualizovat**. Samostatný aktualizátor automaticky ukončí příslušné procesy aplikace, vytvoří místní zálohu programu, databáze, dokumentů a nastavení, vymění program a znovu jej spustí. Při neúspěšném startu se pokusí vrátit původní EXE a databázi. Správce úloh ani ruční kopírování nejsou potřeba. Před kliknutím uložte rozpracované úpravy; běžící kontroly se přeruší. Podrobnosti: [installer/AKTUALIZATOR-1.3.txt](installer/AKTUALIZATOR-1.3.txt).
+
+Oprava 2 odstraňuje atribut „jen pro čtení“ pouze z programových souborů a opakuje výměnu při dočasném blokování Windows. Pokud lze původní soubor přejmenovat, ale nelze jej přepsat, uchová ho pod jedinečným názvem `.bak` a instaluje nový na původní místo. ACL oprávnění nemění. Při opakování po chybě nejprve potvrďte OK a zavřete původní aktualizátor; nový má v nadpisu „oprava 2“. Přesná příčina WinError 5 na druhém PC nebyla potvrzena.
 
 Místní záloha aktualizátoru je v `%LOCALAPPDATA%\ISIR-Kontrola-zalohy` a obsahuje i nastavení/API klíč. Zůstává pouze na PC. Klientský ZIP export z aplikace API klíč nadále neobsahuje. Aktualizátor má celý program přibalený, žádný další balíček nestahuje. Standardní instalaci zjistí automaticky; pokud není dohledatelná, požádá o spuštění původní aplikace a opětovné spuštění aktualizátoru.
 
-Sestavení aktualizátoru ze zdrojů: `.venv\Scripts\python.exe build_updater.py`. Sestavovací skript stáhne vydaný balíček 1.3, ověří jeho pevně zadaný SHA-256 a přibalí ho do samostatného EXE. Samotný aktualizátor při použití již nic nestahuje. Ověření: 9 testů aktualizátoru, 33 testů aplikace a zkouška sestaveného aktualizátoru proti skutečně běžícímu EXE v odděleném dočasném úložišti.
+Sestavení aktualizátoru ze zdrojů: `.venv\Scripts\python.exe build_updater.py`. Sestavovací skript stáhne vydaný balíček 1.3, ověří jeho pevně zadaný SHA-256 a přibalí ho do samostatného EXE. Samotný aktualizátor při použití již nic nestahuje. Ověření: 14 testů aktualizátoru, 33 testů aplikace a zkouška sestaveného aktualizátoru proti skutečně běžícímu EXE v odděleném dočasném úložišti. Zkouška zahrnovala EXE i pomocný skript s atributem „jen pro čtení“; automatizované testy navíc ověřily dočasné uzamčení souboru skutečným Windows handlem.
 
 **Ruční varianta pro správce:**
 

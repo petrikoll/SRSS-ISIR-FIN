@@ -37,11 +37,11 @@ def show_window():
     import tkinter as tk
     from tkinter import ttk, messagebox
     window = tk.Tk()
-    window.title("Aktualizace ISIR Kontrola")
+    window.title("Aktualizace ISIR Kontrola – oprava 2")
     window.resizable(False, False)
     area = ttk.Frame(window, padding=24)
     area.pack(fill="both", expand=True)
-    ttk.Label(area, text="Aktualizovat ISIR Kontrola na verzi 1.3", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(0, 14))
+    ttk.Label(area, text="ISIR Kontrola 1.3 – aktualizátor, oprava 2", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(0, 14))
     ttk.Label(area, text="Program sám ukončí aplikaci, vytvoří zálohu a znovu ji spustí.\nKlienti, dokumenty i nastavení zůstanou zachováni.\n\nPřed aktualizací uložte rozpracované úpravy.\nProbíhající kontroly a AI úlohy se přeruší.\nZáloha s daty a nastavením se uloží jen na tomto PC.", font=("Segoe UI", 10), justify="left").pack(anchor="w")
     status = tk.StringVar(value="Připraveno. Stačí kliknout na Aktualizovat.")
     ttk.Label(area, textvariable=status, wraplength=520, font=("Segoe UI", 10)).pack(anchor="w", pady=(18, 8))

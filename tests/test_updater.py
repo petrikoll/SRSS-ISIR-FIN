@@ -3,6 +3,11 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
+import ctypes
+from ctypes import wintypes
+import os
+import stat
+import threading
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -135,6 +140,82 @@ class UpdaterTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             update_engine.write_backup(self.storage, self.exe, destination)
         self.assertEqual(destination.read_bytes(), original)
+
+    @unittest.skipUnless(os.name == "nt", "Windows file attributes")
+    def test_readonly_exe_and_helpers_update_without_changing_client_data(self):
+        before_db = self.database.read_bytes()
+        before_settings = self.settings.read_bytes()
+        self.exe.chmod(stat.S_IREAD)
+        (self.storage / "reset_data.cmd").chmod(stat.S_IREAD)
+        (self.storage / "uninstall.cmd").chmod(stat.S_IREAD)
+        self.run_update()
+        self.assertEqual(self.exe.read_bytes(), self.new_exe)
+        self.assertEqual(self.database.read_bytes(), before_db)
+        self.assertEqual(self.settings.read_bytes(), before_settings)
+
+    @unittest.skipUnless(os.name == "nt", "Windows sharing violations")
+    def test_windows_file_lock_is_retried_until_handle_is_closed(self):
+        kernel = ctypes.windll.kernel32
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.CreateFileW(str(self.exe), 0x80000000, 0, None, 3, 0x80, None)
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        source = self.storage / "synthetic-new.exe"
+        source.write_bytes(self.new_exe)
+        closed = threading.Event()
+        def close_handle():
+            kernel.CloseHandle(handle)
+            closed.set()
+        timer = threading.Timer(.35, close_handle)
+        timer.start()
+        try:
+            update_engine.replace_program_file(source, self.exe, retry_timeout=2)
+            self.assertTrue(closed.is_set())
+            self.assertEqual(self.exe.read_bytes(), self.new_exe)
+        finally:
+            timer.join()
+
+    def test_denied_overwrite_preserves_old_exe_then_installs_to_free_name(self):
+        source = self.storage / "synthetic-new.exe"
+        source.write_bytes(self.new_exe)
+        replace = Path.replace
+        def deny_overwrite(path, target):
+            if Path(target) == self.exe and self.exe.exists() and path == source:
+                error = PermissionError("synthetic Windows access denied")
+                error.winerror = 5
+                raise error
+            return replace(path, target)
+        with patch.object(Path, "replace", deny_overwrite):
+            update_engine.replace_program_file(source, self.exe, retry_timeout=0)
+        self.assertEqual(self.exe.read_bytes(), self.new_exe)
+        retained = list(self.storage.glob("ISIR-Kontrola.exe.pred-aktualizaci-*.bak"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_bytes(), b"MZ synthetic old exe")
+
+    def test_failed_fallback_returns_retained_original_exe(self):
+        source = self.storage / "synthetic-new.exe"
+        source.write_bytes(self.new_exe)
+        replace = Path.replace
+        def deny_new_program(path, target):
+            if path == source:
+                error = PermissionError("synthetic Windows access denied")
+                error.winerror = 5
+                raise error
+            return replace(path, target)
+        with patch.object(Path, "replace", deny_new_program):
+            with self.assertRaises(PermissionError):
+                update_engine.replace_program_file(source, self.exe, retry_timeout=0)
+        self.assertEqual(self.exe.read_bytes(), b"MZ synthetic old exe")
+        self.assertTrue(source.exists())
+
+    def test_file_replacement_refuses_database_and_settings(self):
+        for target in (self.database, self.settings):
+            before = target.read_bytes()
+            with self.assertRaises(ValueError):
+                update_engine.replace_program_file(self.payload, target, retry_timeout=0)
+            self.assertEqual(target.read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ def main():
                 temporary.unlink(missing_ok=True)
     if sha256(payload.read_bytes()).hexdigest()!=PAYLOAD_SHA256:
         raise RuntimeError("Nesprávný balíček v build/payload. Aktualizátor nebyl sestaven.")
-    subprocess.run([sys.executable,"-m","PyInstaller","--onefile","--noconsole","--name","ISIR-Kontrola-Aktualizace-1.3","--icon","isir.ico","--add-data",f"{payload};payload","update_app.py"],cwd=root,check=True)
+    subprocess.run([sys.executable,"-m","PyInstaller","--onefile","--noconsole","--name","ISIR-Kontrola-Aktualizace-1.3-oprava-2","--icon","isir.ico","--add-data",f"{payload};payload","update_app.py"],cwd=root,check=True)
 
 
 if __name__=="__main__":
